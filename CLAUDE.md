@@ -1,185 +1,93 @@
-# Blitz — Claude MCP Tool Reference
+# CLAUDE.md
 
-## asc_fill_form
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Fill App Store Connect form fields. Auto-navigates to the tab (if auto-nav permission is on).
+## Build & Run Commands
 
-### Tabs and fields
+```bash
+# Debug build
+swift build
 
-**storeListing**
-| field | type | required | notes |
-|---|---|---|---|
-| title | string | yes | App name (max 30 chars) |
-| subtitle | string | no | (max 30 chars) |
-| description | string | yes | (max 4000 chars) |
-| keywords | string | yes | comma-separated, max 100 chars total |
-| promotionalText | string | no | (max 170 chars) |
-| marketingUrl | string | no | |
-| supportUrl | string | yes | |
-| whatsNew | string | no | first version must omit |
-| privacyPolicyUrl | string | yes | |
+# Release build
+swift build -c release
 
-**appDetails**
-| field | type | required | values |
-|---|---|---|---|
-| copyright | string | yes | e.g. "2026 Acme Inc" |
-| primaryCategory | string | yes | GAMES, UTILITIES, PRODUCTIVITY, SOCIAL_NETWORKING, PHOTO_AND_VIDEO, MUSIC, TRAVEL, SPORTS, HEALTH_AND_FITNESS, EDUCATION, BUSINESS, FINANCE, NEWS, FOOD_AND_DRINK, LIFESTYLE, SHOPPING, ENTERTAINMENT, REFERENCE, MEDICAL, NAVIGATION, WEATHER, DEVELOPER_TOOLS |
-| contentRightsDeclaration | string | yes | DOES_NOT_USE_THIRD_PARTY_CONTENT / USES_THIRD_PARTY_CONTENT |
+# Bundle as macOS .app (signs with Developer ID)
+bash scripts/bundle.sh release
 
-**pricing**
-| field | type | required | values |
-|---|---|---|---|
-| isFree | string | yes | "true" / "false" |
+# Build Node.js sidecar (must run before bundle if sidecar is needed)
+npm run build:sidecar
 
-**review.ageRating**
-Boolean fields (value "true"/"false"):
-`gambling`, `messagingAndChat`, `unrestrictedWebAccess`, `userGeneratedContent`, `advertising`, `lootBox`, `healthOrWellnessTopics`, `parentalControls`, `ageAssurance`
+# Full release: bump version, build sidecar, bundle app, build pkg, deploy
+npm run release
 
-Three-level string fields (value "NONE"/"INFREQUENT_OR_MILD"/"FREQUENT_OR_INTENSE"):
-`alcoholTobaccoOrDrugUseOrReferences`, `contests`, `gamblingSimulated`, `gunsOrOtherWeapons`, `horrorOrFearThemes`, `matureOrSuggestiveThemes`, `medicalOrTreatmentInformation`, `profanityOrCrudeHumor`, `sexualContentGraphicAndNudity`, `sexualContentOrNudity`, `violenceCartoonOrFantasy`, `violenceRealistic`, `violenceRealisticProlongedGraphicOrSadistic`
+# Run tests
+swift test
 
-**review.contact**
-| field | type | required |
-|---|---|---|
-| contactFirstName | string | yes |
-| contactLastName | string | yes |
-| contactEmail | string | yes |
-| contactPhone | string | yes |
-| notes | string | no |
-| demoAccountRequired | string | no |
-| demoAccountName | string | conditional |
-| demoAccountPassword | string | conditional |
+# Run a single test
+swift test --filter BlitzCoreTests.SimctlClientTests/testParseDeviceList
 
-**settings.bundleId**
-| field | type | required |
-|---|---|---|
-| bundleId | string | yes |
-
----
-
-## get_tab_state
-
-Read the structured data state of any Blitz tab. Returns form field values, submission readiness, versions, builds, localizations, etc. **Use this instead of screenshots to read UI state.**
-
-| param | type | required | notes |
-|---|---|---|---|
-| tab | string | no | Tab to query. Defaults to currently active tab. |
-
-Valid tabs: `ascOverview`, `storeListing`, `screenshots`, `appDetails`, `pricing`, `review`, `analytics`, `reviews`, `builds`, `groups`, `betaInfo`, `feedback`
-
-Returns JSON with tab-specific fields. Common fields across all tabs:
-- `tab` — which tab was queried
-- `isLoading` — whether data is still loading
-- `error` / `writeError` — any errors
-- `app` — app identity (id, name, bundleId) for ASC tabs
-
-**Tab-specific return data:**
-- `ascOverview` → `submissionReadiness` (isComplete, fields[], missingRequired[]), `latestVersion`, `totalVersions`
-- `storeListing` → `localization` (title, subtitle, description, keywords, etc.), `privacyPolicyUrl`, `localeCount`
-- `appDetails` → `appInfo` (primaryCategory, contentRightsDeclaration), `latestVersion`, `versionCount`
-- `review` → `ageRating` (all 22 fields), `reviewContact` (name, email, phone, etc.), `builds[]`
-- `screenshots` → `screenshotSets[]` (displayType, screenshotCount), `localeCount`
-- `reviews` → `reviews[]` (title, body, rating), `totalReviews`
-- `builds` → `builds[]` (version, processingState, uploadedDate)
-- `groups` → `betaGroups[]` (name, isInternalGroup)
-
----
-
-## asc_upload_screenshots
-
-```json
-{
-  "screenshotPaths": ["/tmp/screen1.png", "/tmp/screen2.png"],
-  "displayType": "APP_IPHONE_67",
-  "locale": "en-US"
-}
+# Build installer pkg
+bash scripts/build-pkg.sh
 ```
 
-Capture screenshots first using existing `get_simulator_screenshot` tool, then pass paths here.
-Required display types: APP_IPHONE_67 (mandatory), APP_IPAD_PRO_3GEN_129 (mandatory for all apps).
-Both iPhone and iPad screenshots must be uploaded for submission readiness.
+## Architecture
 
----
+**Blitz** is a native macOS SwiftUI app (requires macOS 14+) for iOS development. It provides simulator management, screen capture, database browsing, App Store Connect integration, and an MCP server for Claude Code integration. Built with Swift Package Manager (no Xcode project).
 
-## asc_open_submit_preview
+### Two-target structure
 
-No arguments. Checks all required fields and either:
-- Opens the Submit for Review modal if everything is complete
-- Returns a list of missing fields to fix first
+- **BlitzCore** (`Sources/BlitzCore/`) — Pure Swift library with no UI dependencies. Contains process execution (`ProcessRunner`), simulator control (`SimctlClient`), WDA client for physical devices (`WDAClient`), project metadata types (`ProjectMetadata`), and the Node.js sidecar protocol definitions (`SidecarProtocol`).
+- **BlitzApp** (`Sources/BlitzApp/`) — SwiftUI executable. Depends on BlitzCore. Contains all UI, services, and the MCP server.
 
----
+### App State
 
----
+Single `AppState` (`@Observable`) object at `AppState.swift` holds all app state. Child observable managers:
+- `ProjectManager` — project list and loading
+- `SimulatorManager` — simulator lifecycle (boot/shutdown via `SimctlClient`)
+- `SimulatorStreamManager` — screen capture via `ScreenCaptureKit` + Metal rendering
+- `DatabaseManager` — Teenybase DB connection, schema, CRUD
+- `ASCManager` — App Store Connect API integration
+- `ProjectSetupManager` — project scaffolding for different project types
 
-## app_store_setup_signing
+### Navigation
 
-Set up iOS code signing for App Store distribution. Registers the bundle ID, creates a distribution certificate (if none exists), creates and installs a provisioning profile, and configures the Xcode project. **Idempotent** — re-running skips already-completed steps.
+`AppTab` enum defines all tabs, grouped into Build (simulator, database, tests, assets), Release (ASC tabs), Insights, TestFlight, and Settings. `ContentView` uses `NavigationSplitView` with `SidebarView` + `DetailView` that switches on `appState.activeTab`.
 
-| param | type | required | notes |
-|---|---|---|---|
-| teamId | string | no | Apple Developer Team ID. Saved to project metadata after first use. |
+### MCP Server (Claude Code Integration)
 
-**Requires:** Active project with `bundleIdentifier` set (via `asc_fill_form tab=settings.bundleId`) and ASC credentials configured.
+```
+Claude Code ←stdio→ Bridge Script (~/.blitz/blitz-mcp-bridge.sh) ←HTTP→ MCPServerService (Swift actor)
+```
 
-Returns: `bundleIdResourceId`, `certificateId`, `profileUUID`, `teamId`, `log[]`
+- `MCPServerService` — Raw TCP HTTP server on a dynamic port. Writes port to `~/.blitz/mcp-port`. Handles JSON-RPC requests at `/mcp`.
+- `MCPToolRegistry` — Static definitions of all MCP tools (~35 tools covering navigation, projects, simulator, database, settings, device interaction, ASC forms, build pipeline).
+- `MCPToolExecutor` — Executes tool calls. Read-only tools execute immediately; mutating tools go through an approval flow (continuation-based) that shows a native macOS alert.
+- `ApprovalRequest` — Model with `ToolCategory` enum that determines whether user approval is required.
 
----
+### Device Interaction
 
-## app_store_build
+Two paths depending on target device:
+- **Simulator**: `SimctlClient` (xcrun simctl) for lifecycle + `IDBClient` for touch/swipe/describe (via `idb` CLI)
+- **Physical device**: `WDAClient` (WebDriverAgent HTTP API on port 8100) for touch/swipe/screenshots
 
-Build an IPA for App Store submission. Archives the Xcode project and exports a signed IPA.
+`DeviceInteractionService` is the unified actor that dispatches to either path.
 
-| param | type | required | notes |
-|---|---|---|---|
-| scheme | string | no | Xcode scheme (auto-detected if omitted) |
-| configuration | string | no | Build configuration (default: "Release") |
+### Node.js Sidecar
 
-**Requires:** `app_store_setup_signing` must have been run first (needs teamId in project metadata).
+`NodeSidecarService` manages a Node.js child process that communicates via Unix domain socket (`/tmp/blitz-{pid}.sock`). Used for project scaffolding and runtime management (Metro/Vite). The sidecar binary is bundled into the .app at `Contents/Resources/dist/server/`.
 
-Returns: `ipaPath`, `archivePath`, `log[]`
+### Screen Capture
 
----
+`SimulatorCaptureService` uses `ScreenCaptureKit` (SCStream) to capture the Simulator.app window. Frames are rendered via `MetalRenderer` using a Metal pipeline. Stream pauses/resumes on tab switches to conserve resources.
 
-## app_store_upload
+### Project Storage
 
-Upload an IPA to App Store Connect / TestFlight. Optionally polls until build processing completes.
+Projects are stored at `~/Library/Application Support/Blitz/projects/{projectId}/`. Each project has a `.blitz/project.json` metadata file (`BlitzProjectMetadata`). Supported project types: `blitz`, `react-native`, `swift`, `flutter`.
 
-| param | type | required | notes |
-|---|---|---|---|
-| ipaPath | string | no | Path to IPA (uses latest `app_store_build` output if omitted) |
-| skipPolling | boolean | no | Skip waiting for build processing (default: false) |
+## Key Patterns
 
-Returns: `buildVersion`, `processingState`, `log[]`
-
-**Note:** After upload, the tool automatically sets `usesNonExemptEncryption = false` on the build to avoid the export compliance prompt.
-
----
-
-## Recommended full workflow (build + submission)
-
-1. `app_store_setup_signing` teamId=YOUR_TEAM_ID (one-time per bundle ID)
-2. `app_store_build`
-3. `app_store_upload`
-4. `asc_fill_form` tab=storeListing (description, keywords, supportUrl, privacyPolicyUrl)
-5. `asc_fill_form` tab=appDetails (copyright, primaryCategory, contentRightsDeclaration)
-6. `asc_fill_form` tab=review.ageRating (all 22 fields)
-7. `asc_fill_form` tab=review.contact (contactFirstName...contactPhone)
-8. `asc_fill_form` tab=pricing (isFree=true)
-9. Use `get_simulator_screenshot` to capture, then `asc_upload_screenshots` for **both** APP_IPHONE_67 and APP_IPAD_PRO_3GEN_129
-10. Tell user to set Privacy Nutrition Labels manually in App Store Connect (link shown in submission readiness)
-11. `asc_open_submit_preview` — fix any flagged missing fields, then submit
-
-## Recommended first-submission workflow (metadata only)
-
-1. `asc_fill_form` tab=storeListing (description, keywords, supportUrl, privacyPolicyUrl)
-2. `asc_fill_form` tab=appDetails (copyright, primaryCategory, contentRightsDeclaration)
-3. `asc_fill_form` tab=review.ageRating (all 22 fields — set all to false/NONE for simple apps)
-4. `asc_fill_form` tab=review.contact (contactFirstName...contactPhone)
-5. `asc_fill_form` tab=pricing (isFree=true)
-6. Use `get_simulator_screenshot` to capture, then `asc_upload_screenshots` for **both** APP_IPHONE_67 and APP_IPAD_PRO_3GEN_129
-7. Tell user to set Privacy Nutrition Labels manually in App Store Connect (link shown in submission readiness)
-8. `asc_open_submit_preview` — fix any flagged missing fields, then submit
-
-**Note:** Privacy nutrition labels (app data usages) must be completed once manually at
-App Store Connect — this is not exposed in Apple's REST API. The submission readiness
-checklist shows an "Open in ASC" button linking directly to the privacy page for the app.
+- All services that need isolation use Swift `actor` (e.g., `MCPServerService`, `NodeSidecarService`, `DeviceInteractionService`)
+- UI mutations go through `@MainActor` / `MainActor.run`
+- External processes are managed via `ProcessRunner.run()` (async one-shot) or `ProcessRunner.stream()` (long-running with stdout/stderr callbacks, returns `ManagedProcess`)
+- The app uses `@Observable` (Observation framework) rather than `ObservableObject`/`@Published`
+- Linked system frameworks: ScreenCaptureKit, Metal, MetalKit, CoreMedia, AVFoundation, AppKit

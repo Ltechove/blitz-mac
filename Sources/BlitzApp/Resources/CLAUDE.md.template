@@ -1,0 +1,175 @@
+# {{PROJECT_TYPE_HEADER}}
+
+## blitz-ios
+
+This project is opened in **Blitz**, a web-based iOS development IDE with integrated simulator streaming. The user sees a live simulator view in their browser alongside your code. Blitz manages the build pipeline, simulator lifecycle, and dev servers — you focus on writing code.
+
+### Important: What Blitz Manages (Do NOT Do These Manually)
+
+- **Do not start the iOS simulator** — Blitz boots and manages it
+{{REACT_NATIVE_BUILD_WARNINGS}}
+- **Do not modify build settings or signing** — managed by Blitz
+
+### MCP Tools (`blitz-macos`)
+
+The `blitz-macos` MCP server (`.mcp.json`) lets you control the iOS simulator and query project state. Use these tools to test your changes autonomously.
+
+**Simulator interaction:**
+- `device_action` — Perform a single action: `tap`, `swipe`, `button` (HOME/LOCK/SIRI), `input-text`, `key`, `key-sequence`. Supports `describe_after` to capture screen state after the action.
+- `device_actions` — Execute multiple actions in sequence (batch). Same action types, with optional `describe_after` at the end.
+- `describe_screen` — Get the full UI element hierarchy (element types, labels, positions, frames). Use this to understand what's on screen before interacting.
+- `describe_point` — Get the UI element at specific (x, y) coordinates.
+
+**Project state and logs:**
+- `get_project_state` — Get runtime status, project type, dev server URLs/ports, error state, and simulator UDID. Call with `projectDir` set to your current working directory.
+- `query_server_logs` — Query server-side logs (sources: `vite`, `metro`, `ios-build`, `backend`, `runtime`). Supports filtering by level, source, timestamp, and search text.
+- `query_backend_logs` — Query application-level backend logs (console.log/error from user code).
+- `list_issues` — Get issues filed by the user via Blitz's visual issue tracker. Issues are pinned to screen locations and include UI element metadata.
+
+### Testing Workflow
+
+After making code changes:
+1. Wait briefly for hot reload / rebuild
+2. Use `describe_screen` to verify the UI updated as expected
+3. Use `device_action` to interact (tap buttons, enter text, navigate)
+4. Use `describe_screen` again to verify the result
+5. Check `query_server_logs` if something looks wrong
+
+### Issue Tracking
+
+Users can file visual issues by tapping directly on the simulator stream in Blitz. These issues include the screen coordinates, a description, and metadata about the tapped UI element. Use `list_issues` to see open issues and fix them.
+{{METRO_SECTION}}
+
+---
+
+## App Store Connect Tools
+
+### asc_fill_form
+
+Fill App Store Connect form fields. Auto-navigates to the tab (if auto-nav permission is on).
+
+#### Tabs and fields
+
+**storeListing**
+| field | type | required | notes |
+|---|---|---|---|
+| title | string | yes | App name (max 30 chars) |
+| subtitle | string | no | (max 30 chars) |
+| description | string | yes | (max 4000 chars) |
+| keywords | string | yes | comma-separated, max 100 chars total |
+| promotionalText | string | no | (max 170 chars) |
+| marketingUrl | string | no | |
+| supportUrl | string | yes | |
+| whatsNew | string | no | first version must omit |
+| privacyPolicyUrl | string | yes | |
+
+**appDetails**
+| field | type | required | values |
+|---|---|---|---|
+| copyright | string | yes | e.g. "2026 Acme Inc" |
+| primaryCategory | string | yes | GAMES, UTILITIES, PRODUCTIVITY, SOCIAL_NETWORKING, PHOTO_AND_VIDEO, MUSIC, TRAVEL, SPORTS, HEALTH_AND_FITNESS, EDUCATION, BUSINESS, FINANCE, NEWS, FOOD_AND_DRINK, LIFESTYLE, SHOPPING, ENTERTAINMENT, REFERENCE, MEDICAL, NAVIGATION, WEATHER, DEVELOPER_TOOLS |
+| contentRightsDeclaration | string | yes | DOES_NOT_USE_THIRD_PARTY_CONTENT / USES_THIRD_PARTY_CONTENT |
+
+**pricing**
+| field | type | required | values |
+|---|---|---|---|
+| isFree | string | yes | "true" / "false" |
+
+**review.ageRating**
+Boolean fields (value "true"/"false"):
+`gambling`, `messagingAndChat`, `unrestrictedWebAccess`, `userGeneratedContent`, `advertising`, `lootBox`, `healthOrWellnessTopics`, `parentalControls`, `ageAssurance`
+
+Three-level string fields (value "NONE"/"INFREQUENT_OR_MILD"/"FREQUENT_OR_INTENSE"):
+`alcoholTobaccoOrDrugUseOrReferences`, `contests`, `gamblingSimulated`, `gunsOrOtherWeapons`, `horrorOrFearThemes`, `matureOrSuggestiveThemes`, `medicalOrTreatmentInformation`, `profanityOrCrudeHumor`, `sexualContentGraphicAndNudity`, `sexualContentOrNudity`, `violenceCartoonOrFantasy`, `violenceRealistic`, `violenceRealisticProlongedGraphicOrSadistic`
+
+**review.contact**
+| field | type | required |
+|---|---|---|
+| contactFirstName | string | yes |
+| contactLastName | string | yes |
+| contactEmail | string | yes |
+| contactPhone | string | yes |
+| notes | string | no |
+| demoAccountRequired | string | no |
+| demoAccountName | string | conditional |
+| demoAccountPassword | string | conditional |
+
+**settings.bundleId**
+| field | type | required |
+|---|---|---|
+| bundleId | string | yes |
+
+### get_tab_state
+
+Read the structured data state of any Blitz tab. Returns form field values, submission readiness, versions, builds, localizations, etc. **Use this instead of screenshots to read UI state.**
+
+| param | type | required | notes |
+|---|---|---|---|
+| tab | string | no | Tab to query. Defaults to currently active tab. |
+
+Valid tabs: `ascOverview`, `storeListing`, `screenshots`, `appDetails`, `pricing`, `review`, `analytics`, `reviews`, `builds`, `groups`, `betaInfo`, `feedback`
+
+### asc_upload_screenshots
+
+Upload screenshots to App Store Connect.
+```json
+{ "screenshotPaths": ["/tmp/screen1.png"], "displayType": "APP_IPHONE_67", "locale": "en-US" }
+```
+Required display types: APP_IPHONE_67 (mandatory), APP_IPAD_PRO_3GEN_129 (mandatory for all apps).
+
+### asc_open_submit_preview
+
+No arguments. Checks all required fields and either opens the Submit for Review modal or returns missing fields.
+
+### app_store_setup_signing
+
+Set up iOS code signing for App Store distribution. Idempotent — re-running skips already-completed steps.
+
+| param | type | required | notes |
+|---|---|---|---|
+| teamId | string | no | Apple Developer Team ID. Saved to project metadata after first use. |
+
+### app_store_build
+
+Build an IPA for App Store submission. Archives the Xcode project and exports a signed IPA.
+
+| param | type | required | notes |
+|---|---|---|---|
+| scheme | string | no | Xcode scheme (auto-detected if omitted) |
+| configuration | string | no | Build configuration (default: "Release") |
+
+### app_store_upload
+
+Upload an IPA to App Store Connect / TestFlight. Optionally polls until build processing completes.
+
+| param | type | required | notes |
+|---|---|---|---|
+| ipaPath | string | no | Path to IPA (uses latest app_store_build output if omitted) |
+| skipPolling | boolean | no | Skip waiting for build processing (default: false) |
+
+### Recommended full workflow (build + submission)
+
+1. `app_store_setup_signing` teamId=YOUR_TEAM_ID (one-time per bundle ID)
+2. `app_store_build`
+3. `app_store_upload`
+4. `asc_fill_form` tab=storeListing (description, keywords, supportUrl, privacyPolicyUrl)
+5. `asc_fill_form` tab=appDetails (copyright, primaryCategory, contentRightsDeclaration)
+6. `asc_fill_form` tab=review.ageRating (all 22 fields)
+7. `asc_fill_form` tab=review.contact (contactFirstName...contactPhone)
+8. `asc_fill_form` tab=pricing (isFree=true)
+9. Use `get_simulator_screenshot` to capture, then `asc_upload_screenshots` for **both** APP_IPHONE_67 and APP_IPAD_PRO_3GEN_129
+10. Tell user to set Privacy Nutrition Labels manually in App Store Connect
+11. `asc_open_submit_preview` — fix any flagged missing fields, then submit
+
+### Recommended first-submission workflow (metadata only)
+
+1. `asc_fill_form` tab=storeListing (description, keywords, supportUrl, privacyPolicyUrl)
+2. `asc_fill_form` tab=appDetails (copyright, primaryCategory, contentRightsDeclaration)
+3. `asc_fill_form` tab=review.ageRating (all 22 fields — set all to false/NONE for simple apps)
+4. `asc_fill_form` tab=review.contact (contactFirstName...contactPhone)
+5. `asc_fill_form` tab=pricing (isFree=true)
+6. Use `get_simulator_screenshot` to capture, then `asc_upload_screenshots` for **both** APP_IPHONE_67 and APP_IPAD_PRO_3GEN_129
+7. Tell user to set Privacy Nutrition Labels manually in App Store Connect
+8. `asc_open_submit_preview` — fix any flagged missing fields, then submit
+
+**Note:** Privacy nutrition labels (app data usages) must be completed once manually at App Store Connect — this is not exposed in Apple's REST API.

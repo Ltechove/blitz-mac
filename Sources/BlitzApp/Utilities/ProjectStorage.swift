@@ -163,7 +163,7 @@ struct ProjectStorage {
             }
         }
 
-        // 2. CLAUDE.md
+        // 2. CLAUDE.md — load from bundled template
         let claudeMdFile = projectDir.appendingPathComponent("CLAUDE.md")
         if !fm.fileExists(atPath: claudeMdFile.path) {
             let content = Self.claudeMdContent(projectType: projectType)
@@ -171,68 +171,36 @@ struct ProjectStorage {
         }
     }
 
-    // swiftlint:disable function_body_length
     private static func claudeMdContent(projectType: ProjectType) -> String {
+        guard let templateURL = Bundle.module.url(forResource: "CLAUDE.md", withExtension: "template"),
+              var template = try? String(contentsOf: templateURL, encoding: .utf8) else {
+            return "# Blitz AI Agent Guide\n"
+        }
+
         let header = projectType == .swift
-            ? "# Swift Project — Blitz AI Agent Guide"
-            : "# React Native Project — Blitz AI Agent Guide"
+            ? "Swift Project — Blitz AI Agent Guide"
+            : "React Native Project — Blitz AI Agent Guide"
+        template = template.replacingOccurrences(of: "{{PROJECT_TYPE_HEADER}}", with: header)
 
-        var lines = [header, ""]
-        lines.append("## blitz-ios")
-        lines.append("")
-        lines.append("This project is opened in **Blitz**, a web-based iOS development IDE with integrated simulator streaming. The user sees a live simulator view in their browser alongside your code. Blitz manages the build pipeline, simulator lifecycle, and dev servers — you focus on writing code.")
-        lines.append("")
-        lines.append("### Important: What Blitz Manages (Do NOT Do These Manually)")
-        lines.append("")
-        lines.append("- **Do not start the iOS simulator** — Blitz boots and manages it")
-        if projectType == .reactNative {
-            lines.append("- **Do not run `xcodebuild` or `react-native run-ios`** — Blitz handles builds")
-            lines.append("- **Do not start Metro** (`npx react-native start`) — Blitz runs Metro automatically")
-        }
-        lines.append("- **Do not modify build settings or signing** — managed by Blitz")
-        lines.append("")
-        lines.append("### MCP Tools (`blitz-macos`)")
-        lines.append("")
-        lines.append("The `blitz-macos` MCP server (`.mcp.json`) lets you control the iOS simulator and query project state. Use these tools to test your changes autonomously.")
-        lines.append("")
-        lines.append("**Simulator interaction:**")
-        lines.append("- `device_action` — Perform a single action: `tap`, `swipe`, `button` (HOME/LOCK/SIRI), `input-text`, `key`, `key-sequence`. Supports `describe_after` to capture screen state after the action.")
-        lines.append("- `device_actions` — Execute multiple actions in sequence (batch). Same action types, with optional `describe_after` at the end.")
-        lines.append("- `describe_screen` — Get the full UI element hierarchy (element types, labels, positions, frames). Use this to understand what's on screen before interacting.")
-        lines.append("- `describe_point` — Get the UI element at specific (x, y) coordinates.")
-        lines.append("")
-        lines.append("**Project state and logs:**")
-        lines.append("- `get_project_state` — Get runtime status, project type, dev server URLs/ports, error state, and simulator UDID. Call with `projectDir` set to your current working directory.")
-        lines.append("- `query_server_logs` — Query server-side logs (sources: `vite`, `metro`, `ios-build`, `backend`, `runtime`). Supports filtering by level, source, timestamp, and search text.")
-        lines.append("- `query_backend_logs` — Query application-level backend logs (console.log/error from user code).")
-        lines.append("- `list_issues` — Get issues filed by the user via Blitz's visual issue tracker. Issues are pinned to screen locations and include UI element metadata.")
-        lines.append("")
-        lines.append("### Testing Workflow")
-        lines.append("")
-        lines.append("After making code changes:")
-        lines.append("1. Wait briefly for hot reload / rebuild")
-        lines.append("2. Use `describe_screen` to verify the UI updated as expected")
-        lines.append("3. Use `device_action` to interact (tap buttons, enter text, navigate)")
-        lines.append("4. Use `describe_screen` again to verify the result")
-        lines.append("5. Check `query_server_logs` if something looks wrong")
-        lines.append("")
-        lines.append("### Issue Tracking")
-        lines.append("")
-        lines.append("Users can file visual issues by tapping directly on the simulator stream in Blitz. These issues include the screen coordinates, a description, and metadata about the tapped UI element. Use `list_issues` to see open issues and fix them.")
+        let rnWarnings = projectType == .reactNative
+            ? "- **Do not run `xcodebuild` or `react-native run-ios`** — Blitz handles builds\n- **Do not start Metro** (`npx react-native start`) — Blitz runs Metro automatically\n"
+            : ""
+        template = template.replacingOccurrences(of: "{{REACT_NATIVE_BUILD_WARNINGS}}\n", with: rnWarnings)
 
-        if projectType == .reactNative {
-            lines.append("")
-            lines.append("### Metro Bundler")
-            lines.append("")
-            lines.append("Metro is managed automatically by Blitz. **DO NOT start your own Metro server** — it will conflict.")
-            lines.append("- `.blitz/metro.json` contains the active Metro port and bundle URL")
-            lines.append("- `.blitz/metro.log` contains Metro/app logs (including console.log from your app)")
-        }
+        let metroSection = projectType == .reactNative
+            ? """
 
-        lines.append("")
-        return lines.joined(separator: "\n")
+            ### Metro Bundler
+
+            Metro is managed automatically by Blitz. **DO NOT start your own Metro server** — it will conflict.
+            - `.blitz/metro.json` contains the active Metro port and bundle URL
+            - `.blitz/metro.log` contains Metro/app logs (including console.log from your app)
+            """
+            : ""
+        template = template.replacingOccurrences(of: "{{METRO_SECTION}}", with: metroSection)
+
+        return template
     }
-    // swiftlint:enable function_body_length
 
     /// Clear lastOpenedAt on all projects
     func clearRecentProjects() {
