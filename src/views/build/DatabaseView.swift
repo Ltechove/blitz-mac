@@ -16,8 +16,9 @@ struct DatabaseView: View {
     var body: some View {
         VStack(spacing: 0) {
             if db.connectionStatus == .connected {
-                HSplitView {
+                HStack(spacing: 0) {
                     tableListSidebar
+                    Divider()
                     VStack(spacing: 0) {
                         dataToolbar
                         Divider()
@@ -185,7 +186,7 @@ struct DatabaseView: View {
                 DatabaseTableList(dbManager: db, tables: schema.tables)
             }
         }
-        .frame(minWidth: 180, idealWidth: 200, maxWidth: 250)
+        .frame(width: 200)
     }
 
     // MARK: - Data Toolbar

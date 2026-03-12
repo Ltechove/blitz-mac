@@ -29,7 +29,7 @@ struct BuildsView: View {
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            HSplitView {
+            HStack(spacing: 0) {
                 // Build list
                 List(selection: $selectedBuildId) {
                     ForEach(asc.builds) { build in
@@ -38,7 +38,9 @@ struct BuildsView: View {
                     }
                 }
                 .listStyle(.inset)
-                .frame(minWidth: 280, idealWidth: 320)
+                .frame(width: 300)
+
+                Divider()
 
                 // Detail panel
                 if let bid = selectedBuildId,
