@@ -14,8 +14,8 @@ let package = Package(
         .executableTarget(
             name: "Blitz",
             path: "src",
-            exclude: ["Metal"],
-            resources: [.process("Resources"), .copy("Templates")],
+            exclude: ["metal"],
+            resources: [.process("resources"), .copy("templates")],
             linkerSettings: [
                 .linkedFramework("ScreenCaptureKit"),
                 .linkedFramework("Metal"),
@@ -29,7 +29,7 @@ let package = Package(
         .testTarget(
             name: "BlitzTests",
             dependencies: ["Blitz"],
-            path: "Tests/BlitzTests"
+            path: "Tests/blitz_tests"
         ),
     ]
 )

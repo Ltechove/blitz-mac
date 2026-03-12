@@ -82,10 +82,10 @@ struct CICDMigrationTests {
 
 private func sidecarServiceSource() throws -> String {
     var url = URL(fileURLWithPath: #filePath)   // .../Tests/BlitzTests/CICDMigrationTests.swift
-    url = url.deletingLastPathComponent()       // BlitzTests/
+    url = url.deletingLastPathComponent()       // blitz_tests/
     url = url.deletingLastPathComponent()       // Tests/
     url = url.deletingLastPathComponent()       // package root
-    url = url.appendingPathComponent("src/Services/NodeSidecarService.swift")
+    url = url.appendingPathComponent("src/services/NodeSidecarService.swift")
 
     guard FileManager.default.fileExists(atPath: url.path) else {
         throw SourceNotFound(path: url.path)
