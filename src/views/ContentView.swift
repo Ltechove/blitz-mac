@@ -54,7 +54,7 @@ struct ContentView: View {
                 }
                 .help("Connect AI agent")
                 .popover(isPresented: $showConnectAI, arrowEdge: .bottom) {
-                    ConnectAIPopover(projectPath: appState.activeProject?.path)
+                    ConnectAIPopover(projectPath: appState.activeProject?.path, activeTab: appState.activeTab)
                 }
             }
         }
@@ -202,7 +202,7 @@ struct DetailView: View {
         case .database:
             DatabaseView(appState: appState)
         case .tests:
-            TestsView()
+            TestsView(appState: appState)
         case .assets:
             AssetsView(appState: appState)
         case .ascOverview:

@@ -421,6 +421,16 @@ struct DatabaseView: View {
                         .multilineTextAlignment(.center)
                         .padding(.horizontal)
                 }
+                if let project = appState.activeProject, hasBackend {
+                    Button {
+                        Task { await db.startAndConnect(projectId: project.id, projectPath: project.path) }
+                    } label: {
+                        Text("Retry")
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .padding(.top, 4)
+                }
             } else if !hasBackend {
                 Text("Database Inspector")
                     .font(.headline)

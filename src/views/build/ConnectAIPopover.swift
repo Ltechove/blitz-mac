@@ -2,12 +2,53 @@ import SwiftUI
 
 struct ConnectAIPopover: View {
     let projectPath: String?
+    let activeTab: AppTab
 
-    @State private var copied = false
+    @State private var copiedCommand = false
+    @State private var copiedPrompt = false
 
     private var command: String {
         guard let path = projectPath else { return "claude" }
         return "cd \(path) && claude"
+    }
+
+    private var tabPrompt: String? {
+        switch activeTab {
+        case .simulator:
+            return "Build and launch my app on the simulator, then describe what's on screen."
+        case .database:
+            return "Help me set up a database schema and authentication for my app."
+        case .tests:
+            return "Help me write and run tests for my app."
+        case .assets:
+            return "Help me generate and configure app icons and assets."
+        case .ascOverview:
+            return "Help me complete all the steps needed to submit my app to the App Store."
+        case .storeListing:
+            return "Help me write a compelling App Store listing — name, subtitle, description, and keywords."
+        case .screenshots:
+            return "Help me take and upload App Store screenshots for my app."
+        case .appDetails:
+            return "Help me fill in my app's details — category, copyright, and content rights."
+        case .monetization:
+            return "Help me set up monetization — pricing, subscriptions, or in-app purchases."
+        case .review:
+            return "Help me complete the age rating and review contact info for App Store review."
+        case .analytics:
+            return "Help me understand my app's analytics and performance."
+        case .reviews:
+            return "Help me review and respond to customer reviews."
+        case .builds:
+            return "Help me build and upload my app to TestFlight."
+        case .groups:
+            return "Help me set up TestFlight beta groups and add testers."
+        case .betaInfo:
+            return "Help me write the TestFlight beta description and contact info."
+        case .feedback:
+            return "Help me review TestFlight beta feedback."
+        case .settings:
+            return nil
+        }
     }
 
     var body: some View {
@@ -22,6 +63,7 @@ struct ConnectAIPopover: View {
             .pickerStyle(.segmented)
             .labelsHidden()
 
+            // Generic command
             HStack(spacing: 8) {
                 Text(command)
                     .font(.system(size: 12, design: .monospaced))
@@ -33,10 +75,10 @@ struct ConnectAIPopover: View {
                 Button(action: {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(command, forType: .string)
-                    copied = true
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copied = false }
+                    copiedCommand = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedCommand = false }
                 }) {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                    Image(systemName: copiedCommand ? "checkmark" : "doc.on.doc")
                 }
                 .help("Copy to clipboard")
             }
@@ -44,6 +86,33 @@ struct ConnectAIPopover: View {
             Text("Run this in your terminal to connect Claude Code to this project.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+
+            // Tab-specific prompt
+            if let prompt = tabPrompt {
+                Divider()
+
+                Text("Suggested prompt")
+                    .font(.subheadline.weight(.medium))
+
+                HStack(spacing: 8) {
+                    Text(prompt)
+                        .font(.system(size: 12))
+                        .textSelection(.enabled)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
+
+                    Button(action: {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(prompt, forType: .string)
+                        copiedPrompt = true
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { copiedPrompt = false }
+                    }) {
+                        Image(systemName: copiedPrompt ? "checkmark" : "doc.on.doc")
+                    }
+                    .help("Copy prompt to clipboard")
+                }
+            }
         }
         .padding()
         .frame(width: 360)
