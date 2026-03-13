@@ -90,7 +90,6 @@ struct StoreListingView: View {
                 if current != nil {
                     VStack(alignment: .leading, spacing: 20) {
                         editableField("Privacy Policy URL", text: $privacyPolicyUrl, fieldKey: "privacyPolicyUrl")
-                        Divider()
                         editableField("Name", text: $title, fieldKey: "title", maxChars: 30)
                         editableField("Subtitle", text: $subtitle, fieldKey: "subtitle", maxChars: 30)
                         editableMultilineField("Description", text: $descriptionText, fieldKey: "description", maxChars: 4000)
@@ -219,7 +218,6 @@ struct StoreListingView: View {
             TextField(label, text: text)
                 .textFieldStyle(.roundedBorder)
                 .focused($focusedField, equals: fieldKey)
-            Divider()
         }
     }
 
@@ -246,7 +244,6 @@ struct StoreListingView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
                 .focused($focusedField, equals: fieldKey)
-            Divider()
         }
     }
 }
