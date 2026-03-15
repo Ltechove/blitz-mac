@@ -74,4 +74,4 @@ Single-target SwiftUI app built with Swift Package Manager. All source lives in 
 
 ## License
 
-[MIT](LICENSE)
+[Apache License 2.0](LICENSE)
