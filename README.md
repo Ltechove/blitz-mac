@@ -22,6 +22,10 @@ Blitz is a native macOS app that gives AI agents full control over the iOS devel
   <img src=".github/assets/before-after.png" width="800" />
 </div>
 
+### Demo: submitting an app to App Store Connect for review
+
+https://github.com/user-attachments/assets/07364d9f-f6a7-4375-acc8-b7ab46dcc60e
+
 ## Requirements
 
 - macOS 14+ (Sonoma)
