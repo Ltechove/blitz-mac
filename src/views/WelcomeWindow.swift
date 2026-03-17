@@ -24,6 +24,8 @@ struct WelcomeWindow: View {
             if appState.projectManager.projects.isEmpty {
                 await appState.projectManager.loadProjects()
             }
+        }
+        .task {
             await appState.autoUpdate.checkForUpdate()
         }
         .onChange(of: appState.activeProjectId) { _, newValue in

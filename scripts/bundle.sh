@@ -117,10 +117,16 @@ PLIST
 if [ "$SIGNING_IDENTITY" != "-" ]; then
     echo "Signing native dependencies..."
     find "$BUNDLE_DIR/Contents/Resources" -type f \( -name "*.node" -o -name "*.dylib" \) 2>/dev/null | while read -r f; do
-        codesign --force --options runtime --timestamp \
+        if ! codesign --force --options runtime --timestamp \
             --sign "$SIGNING_IDENTITY" \
             --entitlements "$ENTITLEMENTS" \
-            "$f" 2>/dev/null && echo "  Signed: $f" || true
+            "$f" 2>/dev/null; then
+            codesign --force --options runtime \
+                --sign "$SIGNING_IDENTITY" \
+                --entitlements "$ENTITLEMENTS" \
+                "$f" 2>/dev/null || true
+        fi
+        echo "  Signed: $f"
     done
 fi
 
@@ -128,10 +134,17 @@ fi
 if [ "$SIGNING_IDENTITY" = "-" ]; then
     codesign --force --sign - --entitlements "$ENTITLEMENTS" "$BUNDLE_DIR"
 else
-    codesign --force --options runtime --timestamp \
+    # Try with timestamp (required for notarization); fall back without for local dev
+    if ! codesign --force --options runtime --timestamp \
         --sign "$SIGNING_IDENTITY" \
         --entitlements "$ENTITLEMENTS" \
-        "$BUNDLE_DIR"
+        "$BUNDLE_DIR" &>/dev/null; then
+        echo "Timestamp server unavailable, signing without timestamp..."
+        codesign --force --options runtime \
+            --sign "$SIGNING_IDENTITY" \
+            --entitlements "$ENTITLEMENTS" \
+            "$BUNDLE_DIR"
+    fi
 fi
 
 echo ""

@@ -71,14 +71,22 @@ struct UpdateOverlay: View {
                 VStack(spacing: 6) {
                     Text("Downloading Update")
                         .font(.title2.weight(.semibold))
-                    Text("\(percent)%")
-                        .font(.subheadline.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    if percent >= 0 {
+                        Text("\(percent)%")
+                            .font(.subheadline.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
-                ProgressView(value: Double(percent), total: 100)
-                    .progressViewStyle(.linear)
-                    .frame(maxWidth: .infinity)
+                if percent >= 0 {
+                    ProgressView(value: Double(percent), total: 100)
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .frame(maxWidth: .infinity)
+                }
 
                 Text("Please wait...")
                     .font(.caption)
@@ -194,12 +202,19 @@ struct UpdateBanner: View {
                     Text("Downloading update...")
                         .font(.caption)
                     Spacer()
-                    Text("\(percent)%")
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(.secondary)
+                    if percent >= 0 {
+                        Text("\(percent)%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
-                ProgressView(value: Double(percent), total: 100)
-                    .progressViewStyle(.linear)
+                if percent >= 0 {
+                    ProgressView(value: Double(percent), total: 100)
+                        .progressViewStyle(.linear)
+                } else {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                }
             }
             .padding(12)
             .background(Color.blue.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))

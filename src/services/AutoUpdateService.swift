@@ -61,10 +61,11 @@ final class AutoUpdateManager {
 
             let remoteVersion = tagName.replacingOccurrences(of: "v", with: "")
 
-            // Find the .pkg asset first, fall back to .app.zip
-            let pkgAsset = assets.first { ($0["name"] as? String)?.hasSuffix(".pkg") == true }
+            // Prefer .app.zip for auto-updates (no admin password prompt);
+            // fall back to .pkg if zip isn't available
             let zipAsset = assets.first { ($0["name"] as? String)?.hasSuffix(".app.zip") == true }
-            guard let asset = pkgAsset ?? zipAsset,
+            let pkgAsset = assets.first { ($0["name"] as? String)?.hasSuffix(".pkg") == true }
+            guard let asset = zipAsset ?? pkgAsset,
                   let downloadUrl = asset["browser_download_url"] as? String,
                   let filename = asset["name"] as? String else {
                 state = .idle
@@ -95,7 +96,7 @@ final class AutoUpdateManager {
     func performUpdate() async {
         guard let url = downloadURL, let filename = downloadFilename else { return }
 
-        state = .downloading(percent: 0)
+        state = .downloading(percent: -1)
 
         do {
             let downloadedPath = try await downloadApp(url: url, filename: filename)
@@ -122,25 +123,8 @@ final class AutoUpdateManager {
         // Remove stale download
         try? FileManager.default.removeItem(at: destination)
 
-        let (asyncBytes, response) = try await URLSession.shared.bytes(from: URL(string: url)!)
-
-        let totalBytes = (response as? HTTPURLResponse)
-            .flatMap { Int($0.value(forHTTPHeaderField: "Content-Length") ?? "") } ?? 0
-
-        var data = Data()
-        data.reserveCapacity(totalBytes > 0 ? totalBytes : 50_000_000)
-
-        var lastReportedPercent = 0
-        for try await byte in asyncBytes {
-            data.append(byte)
-            if totalBytes > 0 {
-                let percent = Int(Double(data.count) / Double(totalBytes) * 100)
-                if percent != lastReportedPercent {
-                    lastReportedPercent = percent
-                    state = .downloading(percent: min(percent, 100))
-                }
-            }
-        }
+        let request = URLRequest(url: URL(string: url)!)
+        let (data, _) = try await URLSession.shared.data(for: request)
 
         try data.write(to: destination)
         print("[AutoUpdate] Downloaded \(data.count) bytes to \(destination.path)")
