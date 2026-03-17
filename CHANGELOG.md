@@ -1,5 +1,8 @@
 # Changelog
 
+## 1.0.24
+Mac App Support! Now you can import or create macOS applications and upload to the App Store. 
+
 ## 1.0.23
 - Improve auto-update UX: faster dialog, indeterminate progress, no admin prompt
 

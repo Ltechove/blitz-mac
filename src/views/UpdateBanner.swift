@@ -14,7 +14,7 @@ struct UpdateOverlay: View {
                 .ignoresSafeArea()
 
             card
-                .frame(width: 380)
+                .frame(width: 420)
                 .padding(32)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
                 .shadow(color: .black.opacity(0.2), radius: 24, y: 8)
@@ -25,25 +25,25 @@ struct UpdateOverlay: View {
     private var card: some View {
         switch autoUpdate.state {
         case .available(let version, let notes):
-            VStack(spacing: 20) {
-                Image(systemName: "arrow.down.circle.fill")
-                    .font(.system(size: 44))
-                    .foregroundStyle(.blue)
-
-                VStack(spacing: 6) {
+            VStack(spacing: 16) {
+                HStack {
                     Text("Update Available")
-                        .font(.title2.weight(.semibold))
-                    Text("Version \(version)")
+                        .font(.title3.weight(.semibold))
+                    Spacer()
+                    Text("v\(version)")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
 
                 if !notes.isEmpty {
-                    Text(notes)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(6)
+                    ScrollView {
+                        Text(notes)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 200)
                 }
 
                 VStack(spacing: 8) {
@@ -173,10 +173,13 @@ struct UpdateBanner: View {
                 }
 
                 if !notes.isEmpty {
-                    Text(notes)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(3)
+                    ScrollView {
+                        Text(notes)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 80)
                 }
 
                 HStack {

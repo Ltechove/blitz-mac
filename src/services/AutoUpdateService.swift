@@ -83,7 +83,7 @@ final class AutoUpdateManager {
             downloadURL = downloadUrl
             downloadFilename = filename
 
-            let notes = json["body"] as? String ?? ""
+            let notes = await Self.fetchChangelogNotes(for: remoteVersion)
             state = .available(version: remoteVersion, releaseNotes: notes)
         } catch {
             print("[AutoUpdate] Check failed: \(error)")
@@ -209,6 +209,43 @@ final class AutoUpdateManager {
         await MainActor.run {
             NSApplication.shared.terminate(nil)
         }
+    }
+
+    /// Fetches CHANGELOG.md from the repo and extracts the notes for the given version.
+    private static func fetchChangelogNotes(for version: String) async -> String {
+        let rawURL = "https://raw.githubusercontent.com/blitzdotdev/blitz-mac/master/CHANGELOG.md"
+        do {
+            let (data, _) = try await URLSession.shared.data(for: URLRequest(url: URL(string: rawURL)!))
+            guard let content = String(data: data, encoding: .utf8) else { return "" }
+            return parseChangelog(content, version: version)
+        } catch {
+            print("[AutoUpdate] Failed to fetch CHANGELOG.md: \(error)")
+            return ""
+        }
+    }
+
+    /// Extracts bullet points under the `## <version>` heading from a changelog string.
+    private static func parseChangelog(_ content: String, version: String) -> String {
+        let lines = content.components(separatedBy: "\n")
+        var capturing = false
+        var notes: [String] = []
+
+        for line in lines {
+            if line.hasPrefix("## ") {
+                if capturing { break }
+                let heading = line.dropFirst(3).trimmingCharacters(in: .whitespaces)
+                if heading == version {
+                    capturing = true
+                }
+            } else if capturing {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if !trimmed.isEmpty {
+                    notes.append(trimmed)
+                }
+            }
+        }
+
+        return notes.joined(separator: "\n")
     }
 
     /// Simple semver comparison (major.minor.patch).
