@@ -24,6 +24,7 @@ xcuserdata/
 # SPM
 .swiftpm/
 Packages/
+!packages/
 
 # macOS
 .DS_Store
@@ -44,6 +45,7 @@ yarn-error.log
 .env.local
 *.pem
 *.p8
+.mcpregistry_*
 
 # IDE
 .vscode/

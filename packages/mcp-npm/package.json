@@ -1,0 +1,27 @@
+{
+  "name": "@blitzdev/blitz-mcp",
+  "version": "1.0.26",
+  "type": "module",
+  "mcpName": "io.github.blitzdotdev/blitz",
+  "description": "Give AI agents full control over iOS/macOS development — simulator management, App Store Connect, build pipeline, and more via Blitz.",
+  "bin": {
+    "blitz-mcp": "bin/cli.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blitzdotdev/blitz-mac.git"
+  },
+  "homepage": "https://blitz.dev",
+  "license": "Apache-2.0",
+  "keywords": [
+    "mcp",
+    "ios",
+    "macos",
+    "simulator",
+    "xcode",
+    "app-store-connect",
+    "claude",
+    "ai-agent",
+    "testflight"
+  ]
+}
