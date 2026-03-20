@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import ImageIO
 
 // MARK: - Models
 
@@ -58,44 +59,6 @@ private enum ScreenshotDeviceType: String, CaseIterable, Identifiable {
     }
 }
 
-private struct LocalScreenshot: Identifiable, Equatable {
-    let id: UUID
-    let url: URL
-    let image: NSImage
-
-    static func == (lhs: LocalScreenshot, rhs: LocalScreenshot) -> Bool {
-        lhs.id == rhs.id
-    }
-}
-
-private enum ScreenshotCategory {
-    case preview   // indices 0–2
-    case appStore  // indices 3–9
-    case ignored   // indices 10+
-
-    var color: Color {
-        switch self {
-        case .preview: .blue
-        case .appStore: .green
-        case .ignored: .gray
-        }
-    }
-
-    var label: String {
-        switch self {
-        case .preview: "Preview"
-        case .appStore: "App Store"
-        case .ignored: "Not uploaded"
-        }
-    }
-
-    static func from(index: Int) -> ScreenshotCategory {
-        if index < 3 { return .preview }
-        if index < 10 { return .appStore }
-        return .ignored
-    }
-}
-
 // MARK: - View
 
 struct ScreenshotsView: View {
@@ -105,37 +68,27 @@ struct ScreenshotsView: View {
     private var platform: ProjectPlatform { appState.activeProject?.platform ?? .iOS }
 
     @State private var selectedDevice: ScreenshotDeviceType = .iPhone
-    @State private var iphoneScreenshots: [LocalScreenshot] = []
-    @State private var ipadScreenshots: [LocalScreenshot] = []
-    @State private var macScreenshots: [LocalScreenshot] = []
-    @State private var draggedScreenshot: LocalScreenshot?
+    @State private var selectedAssetId: UUID?         // selected in asset library
+    @State private var selectedTrackIndex: Int?       // selected in track
+    @State private var draggedAssetId: UUID?          // drag from asset library
+    @State private var draggedTrackIndex: Int?        // drag within track
     @State private var importError: String?
-    @State private var isUploading = false
-    @State private var uploadDone = false
-
-    private var screenshotsBinding: Binding<[LocalScreenshot]> {
-        switch selectedDevice {
-        case .iPhone: return $iphoneScreenshots
-        case .iPad: return $ipadScreenshots
-        case .mac: return $macScreenshots
-        }
-    }
-
-    private var screenshots: [LocalScreenshot] {
-        screenshotsBinding.wrappedValue
-    }
-
-    /// ASC screenshots already uploaded for the selected device type
-    private var ascScreenshots: [ASCScreenshot] {
-        let displayType = selectedDevice.ascDisplayType
-        guard let set = asc.screenshotSets.first(where: {
-            $0.attributes.screenshotDisplayType == displayType
-        }) else { return [] }
-        return asc.screenshots[set.id] ?? []
-    }
+    @State private var isDropTargeted = false
 
     private var availableDeviceTypes: [ScreenshotDeviceType] {
         ScreenshotDeviceType.types(for: platform)
+    }
+
+    private var currentTrack: [TrackSlot?] {
+        asc.trackSlots[selectedDevice.ascDisplayType] ?? Array(repeating: nil, count: 10)
+    }
+
+    private var hasChanges: Bool {
+        asc.hasUnsavedChanges(displayType: selectedDevice.ascDisplayType)
+    }
+
+    private var filledSlotCount: Int {
+        currentTrack.compactMap { $0 }.count
     }
 
     var body: some View {
@@ -145,42 +98,21 @@ struct ScreenshotsView: View {
             bundleId: appState.activeProject?.metadata.bundleIdentifier
         ) {
             ASCTabContent(asc: asc, tab: .screenshots, platform: appState.activeProject?.platform ?? .iOS) {
-                screenshotsContent
-            }
-        }
-        .task { await asc.fetchTabData(.screenshots) }
-        .onAppear {
-            // Default to the first available device type for this platform
-            if let first = availableDeviceTypes.first, !availableDeviceTypes.contains(selectedDevice) {
-                selectedDevice = first
-            }
-        }
-    }
-
-    // MARK: - Content
-
-    @ViewBuilder
-    private var screenshotsContent: some View {
-        VStack(spacing: 0) {
-            headerBar
-            Divider()
-
-            if screenshots.isEmpty && ascScreenshots.isEmpty {
-                emptyState
-            } else if screenshots.isEmpty {
-                // Only ASC screenshots exist — show them with the upload prompt
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        ascUploadedSection
+                HStack(spacing: 0) {
+                    assetLibraryPanel
+                        .frame(width: 220)
+                    Divider()
+                    VStack(spacing: 0) {
+                        detailView
+                        Divider()
+                        trackView
+                            .frame(minHeight: 200)
                     }
-                    .padding(20)
                 }
-            } else {
-                legendBar
-                Divider()
-                screenshotGrid
             }
         }
+        .task { await loadData() }
+        .onChange(of: selectedDevice) { _, _ in loadTrackForDevice() }
         .alert("Import Error", isPresented: Binding(
             get: { importError != nil },
             set: { if !$0 { importError = nil } }
@@ -191,78 +123,350 @@ struct ScreenshotsView: View {
         }
     }
 
-    // MARK: - Header
+    // MARK: - Asset Library Panel (left)
 
-    private var headerBar: some View {
-        HStack(spacing: 12) {
-            if availableDeviceTypes.count > 1 {
-                Picker("Device", selection: $selectedDevice) {
+    private var assetLibraryPanel: some View {
+        VStack(spacing: 0) {
+            // Device picker
+            VStack(spacing: 8) {
+                if availableDeviceTypes.count > 1 {
                     ForEach(availableDeviceTypes) { device in
-                        Text(device.label).tag(device)
+                        Button {
+                            selectedDevice = device
+                        } label: {
+                            HStack {
+                                Text(device.label)
+                                    .font(.callout)
+                                Spacer()
+                                if asc.hasUnsavedChanges(displayType: device.ascDisplayType) {
+                                    Circle()
+                                        .fill(.orange)
+                                        .frame(width: 6, height: 6)
+                                }
+                                if device == selectedDevice {
+                                    Image(systemName: "checkmark")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(device == selectedDevice ? Color.accentColor.opacity(0.12) : .clear)
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                        }
+                        .buttonStyle(.plain)
                     }
+                } else if let device = availableDeviceTypes.first {
+                    Text(device.label)
+                        .font(.callout.bold())
+                        .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: 280)
-            } else if let device = availableDeviceTypes.first {
-                Text(device.label)
-                    .font(.callout.bold())
+            }
+            .padding(10)
+
+            Divider()
+
+            // Asset list
+            if asc.localScreenshotAssets.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "photo.on.rectangle")
+                        .font(.title2)
+                        .foregroundStyle(.tertiary)
+                    Text("No local assets")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("Add files to get started")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 4) {
+                        ForEach(asc.localScreenshotAssets) { asset in
+                            assetRow(asset)
+                        }
+                    }
+                    .padding(8)
+                }
             }
 
-            Spacer()
+            Divider()
 
-            if !screenshots.isEmpty {
-                Text("\(screenshots.count) screenshot\(screenshots.count == 1 ? "" : "s")")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
+            // Add button
             Button {
                 openFilePicker()
             } label: {
-                Label("Add Screenshots", systemImage: "plus.rectangle.on.rectangle")
+                Label("Add Files", systemImage: "plus")
+                    .frame(maxWidth: .infinity)
             }
-
-            if !screenshots.isEmpty {
-                Button(role: .destructive) {
-                    withAnimation { screenshotsBinding.wrappedValue.removeAll() }
-                    uploadDone = false
-                } label: {
-                    Label("Clear All", systemImage: "trash")
-                }
-
-                Button {
-                    Task { await uploadToASC() }
-                } label: {
-                    if isUploading {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Label(uploadDone ? "Uploaded" : "Upload to ASC", systemImage: uploadDone ? "checkmark.circle" : "arrow.up.circle")
-                    }
-                }
-                .disabled(isUploading || screenshots.isEmpty || uploadDone)
-            }
+            .buttonStyle(.borderless)
+            .padding(10)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
-        .background(.background.secondary)
+        .background(.background)
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor, lineWidth: 2)
+                .opacity(isDropTargeted ? 1 : 0)
+                .padding(2)
+        )
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            handleFinderDrop(providers)
+        }
     }
 
-    // MARK: - Legend
+    private func assetRow(_ asset: LocalScreenshotAsset) -> some View {
+        HStack(spacing: 8) {
+            Image(nsImage: asset.image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 36, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 4))
 
-    private var legendBar: some View {
-        HStack(spacing: 16) {
-            legendDot(color: .blue, label: "App Preview (1\u{2013}3)")
-            legendDot(color: .green, label: "App Store (4\u{2013}10)")
-            legendDot(color: .gray.opacity(0.5), label: "Not uploaded")
-            Spacer()
-            Text("Drag to reorder")
+            Text(asset.fileName)
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 6)
-        .background(.background)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .background(selectedAssetId == asset.id ? Color.accentColor.opacity(0.15) : .clear)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .onTapGesture {
+            selectedAssetId = asset.id
+            selectedTrackIndex = nil
+        }
+        .contextMenu {
+            Button("Delete", role: .destructive) {
+                deleteAsset(asset)
+            }
+        }
+        .onDrag {
+            draggedAssetId = asset.id
+            return NSItemProvider(object: asset.url.path as NSString)
+        }
+    }
+
+    // MARK: - Detail View (top right)
+
+    private var detailView: some View {
+        Group {
+            if let trackIdx = selectedTrackIndex, let slot = currentTrack[trackIdx] {
+                // Show selected track slot
+                slotDetailImage(slot)
+            } else if let assetId = selectedAssetId,
+                      let asset = asc.localScreenshotAssets.first(where: { $0.id == assetId }) {
+                // Show selected asset
+                Image(nsImage: asset.image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .padding(20)
+            } else {
+                ContentUnavailableView {
+                    Label("No Selection", systemImage: "photo.on.rectangle")
+                } description: {
+                    Text("Select an asset or track slot to preview")
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Color(.controlBackgroundColor))
+    }
+
+    @ViewBuilder
+    private func slotDetailImage(_ slot: TrackSlot) -> some View {
+        if let image = slot.localImage {
+            Image(nsImage: image)
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .padding(20)
+        } else if let ascShot = slot.ascScreenshot, let url = ascShot.imageURL {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().aspectRatio(contentMode: .fit).padding(20)
+                case .failure:
+                    Image(systemName: "photo")
+                        .font(.largeTitle)
+                        .foregroundStyle(.secondary)
+                default:
+                    ProgressView()
+                }
+            }
+        } else {
+            Image(systemName: "photo")
+                .font(.largeTitle)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    // MARK: - Track View (bottom right)
+
+    private var trackView: some View {
+        VStack(spacing: 0) {
+            // Toolbar
+            HStack {
+                HStack(spacing: 4) {
+                    legendDot(color: .green, label: "Synced")
+                    legendDot(color: .orange, label: "Changed")
+                }
+
+                Spacer()
+
+                Text("\(filledSlotCount)/10 slots")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Button {
+                    Task { await save() }
+                } label: {
+                    if asc.isSyncing {
+                        HStack(spacing: 6) {
+                            ProgressView()
+                                .controlSize(.small)
+                            Text("Saving...")
+                        }
+                    } else {
+                        Label("Save", systemImage: "arrow.up.circle")
+                    }
+                }
+                .disabled(!hasChanges || asc.isSyncing)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 8)
+            .background(.background.secondary)
+
+            if let error = asc.writeError {
+                HStack {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                    Text(error)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+                .padding(6)
+                .frame(maxWidth: .infinity)
+                .background(.red.opacity(0.08))
+            }
+
+            Divider()
+
+            // Track slots
+            ScrollView(.horizontal, showsIndicators: true) {
+                HStack(spacing: 8) {
+                    ForEach(0..<10, id: \.self) { index in
+                        trackSlotView(index: index)
+                    }
+                }
+                .padding(12)
+            }
+        }
+    }
+
+    private func trackSlotView(index: Int) -> some View {
+        let slot = currentTrack[index]
+        let saved = (asc.savedTrackState[selectedDevice.ascDisplayType] ?? Array(repeating: nil, count: 10))[index]
+        let isSynced = slot?.id == saved?.id && slot != nil
+
+        return VStack(spacing: 4) {
+            ZStack(alignment: .topLeading) {
+                if let slot {
+                    // Slot has content
+                    Group {
+                        if let image = slot.localImage {
+                            Image(nsImage: image)
+                                .resizable()
+                                .aspectRatio(contentMode: .fit)
+                        } else if let ascShot = slot.ascScreenshot, let url = ascShot.imageURL {
+                            AsyncImage(url: url) { phase in
+                                switch phase {
+                                case .success(let img):
+                                    img.resizable().aspectRatio(contentMode: .fit)
+                                case .failure:
+                                    Image(systemName: "photo")
+                                        .foregroundStyle(.secondary)
+                                default:
+                                    ProgressView().controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                    .frame(width: 110, height: 110)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+
+                    // Delete button (top-right)
+                    Button {
+                        withAnimation { asc.removeFromTrack(displayType: selectedDevice.ascDisplayType, slotIndex: index) }
+                        if selectedTrackIndex == index { selectedTrackIndex = nil }
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.white, .red)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .padding(4)
+                } else {
+                    // Empty slot placeholder
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(.controlBackgroundColor))
+                        .frame(width: 110, height: 110)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6)
+                                .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [5]))
+                                .foregroundStyle(.quaternary)
+                        )
+                }
+
+                // Index badge
+                Text("\(index + 1)")
+                    .font(.caption2.bold())
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 2)
+                    .background(slot != nil ? (isSynced ? Color.green : Color.orange) : Color.gray.opacity(0.5))
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .padding(4)
+            }
+            .frame(width: 130, height: 120)
+            .background(Color(.controlBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(slot != nil ? (isSynced ? Color.green : Color.orange) : .clear, lineWidth: 2)
+            )
+            .onTapGesture {
+                if slot != nil {
+                    selectedTrackIndex = index
+                    selectedAssetId = nil
+                }
+            }
+            .onDrop(of: [.text], delegate: TrackSlotDropDelegate(
+                targetIndex: index,
+                displayType: selectedDevice.ascDisplayType,
+                asc: asc,
+                localAssets: asc.localScreenshotAssets,
+                draggedAssetId: $draggedAssetId,
+                draggedTrackIndex: $draggedTrackIndex,
+                importError: $importError
+            ))
+            .onDrag {
+                if slot != nil {
+                    draggedTrackIndex = index
+                    return NSItemProvider(object: "\(index)" as NSString)
+                }
+                return NSItemProvider()
+            }
+
+            if slot != nil {
+                Text(isSynced ? "Synced" : "Changed")
+                    .font(.caption2)
+                    .foregroundStyle(isSynced ? .green : .orange)
+            }
+        }
     }
 
     private func legendDot(color: Color, label: String) -> some View {
@@ -277,239 +481,115 @@ struct ScreenshotsView: View {
         }
     }
 
-    // MARK: - Empty
-
-    private var emptyState: some View {
-        ContentUnavailableView {
-            Label("No Screenshots", systemImage: "photo.on.rectangle")
-        } description: {
-            VStack(spacing: 4) {
-                Text("Drag up to 3 app previews and 10 screenshots here.")
-                Text("(\(selectedDevice.dimensionLabel))")
-                    .foregroundStyle(.tertiary)
-            }
-        } actions: {
-            Button("Add Screenshots") { openFilePicker() }
-                .buttonStyle(.borderedProminent)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-
-    // MARK: - Grid
-
-    private var screenshotGrid: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 160, maximum: 220))],
-                        spacing: 12
-                    ) {
-                        ForEach(Array(screenshots.enumerated()), id: \.element.id) { index, screenshot in
-                            screenshotCard(screenshot, index: index)
-                                .onDrag {
-                                    draggedScreenshot = screenshot
-                                    return NSItemProvider(object: screenshot.id.uuidString as NSString)
-                                }
-                                .onDrop(
-                                    of: [.text],
-                                    delegate: ScreenshotReorderDelegate(
-                                        item: screenshot,
-                                        items: screenshotsBinding,
-                                        draggedItem: $draggedScreenshot
-                                    )
-                                )
-                        }
-                    }
-
-                    if !ascScreenshots.isEmpty {
-                        ascUploadedSection
-                    }
-                }
-                .padding(20)
-            }
-
-            if let error = asc.writeError {
-                HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.red)
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                }
-                .padding(8)
-                .frame(maxWidth: .infinity)
-                .background(.red.opacity(0.08))
-            }
-        }
-    }
-
-    // MARK: - ASC Uploaded Section
-
-    private var ascUploadedSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Image(systemName: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                Text("Uploaded to App Store Connect")
-                    .font(.callout.bold())
-                Text("\u{2014} \(ascScreenshots.count) screenshot\(ascScreenshots.count == 1 ? "" : "s")")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 160, maximum: 220))],
-                spacing: 12
-            ) {
-                ForEach(ascScreenshots) { shot in
-                    ascScreenshotTile(shot)
-                }
-            }
-        }
-    }
-
-    private func ascScreenshotTile(_ shot: ASCScreenshot) -> some View {
-        VStack(spacing: 6) {
-            Group {
-                if let url = shot.imageURL {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().aspectRatio(contentMode: .fit)
-                        case .failure:
-                            Image(systemName: "photo")
-                                .font(.title)
-                                .foregroundStyle(.secondary)
-                        default:
-                            ProgressView()
-                        }
-                    }
-                } else {
-                    Image(systemName: "photo")
-                        .font(.title)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(height: 200)
-            .frame(maxWidth: .infinity)
-            .background(Color(.controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-
-            if let name = shot.attributes.fileName {
-                Text(name)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-
-            if let state = shot.attributes.assetDeliveryState?.state {
-                Text(state)
-                    .font(.caption2)
-                    .foregroundStyle(state == "COMPLETE" ? .green : .orange)
-            }
-        }
-    }
-
-    // MARK: - Card
-
-    private func screenshotCard(_ screenshot: LocalScreenshot, index: Int) -> some View {
-        let category = ScreenshotCategory.from(index: index)
-
-        return VStack(spacing: 4) {
-            ZStack(alignment: .topLeading) {
-                Image(nsImage: screenshot.image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(maxHeight: 240)
-
-                // Index badge
-                Text("\(index + 1)")
-                    .font(.caption2.bold())
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(category.color)
-                    .clipShape(RoundedRectangle(cornerRadius: 4))
-                    .padding(6)
-            }
-            .frame(maxWidth: .infinity)
-            .background(Color(.controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 8))
-            .overlay(
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(category.color, lineWidth: 2)
-            )
-            .opacity(category == .ignored ? 0.45 : 1.0)
-
-            Text(category.label)
-                .font(.caption2)
-                .foregroundStyle(category.color)
-
-            Text(screenshot.url.lastPathComponent)
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-        .contextMenu {
-            Button("Remove", role: .destructive) {
-                withAnimation {
-                    screenshotsBinding.wrappedValue.removeAll { $0.id == screenshot.id }
-                }
-            }
-        }
-    }
-
     // MARK: - Actions
+
+    private func loadData() async {
+        // Default device for platform
+        if let first = availableDeviceTypes.first, !availableDeviceTypes.contains(selectedDevice) {
+            selectedDevice = first
+        }
+
+        await asc.fetchTabData(.screenshots)
+
+        // Scan local assets
+        if let projectId = appState.activeProjectId {
+            asc.scanLocalAssets(projectId: projectId)
+        }
+
+        // Load track from ASC
+        loadTrackForDevice()
+    }
+
+    private func loadTrackForDevice() {
+        let displayType = selectedDevice.ascDisplayType
+        // Only load from ASC if not already populated (preserves unsaved changes)
+        if asc.trackSlots[displayType] == nil {
+            asc.loadTrackFromASC(displayType: displayType)
+        }
+    }
+
+    private func deleteAsset(_ asset: LocalScreenshotAsset) {
+        let fm = FileManager.default
+        try? fm.removeItem(at: asset.url)
+        if selectedAssetId == asset.id { selectedAssetId = nil }
+        if let projectId = appState.activeProjectId {
+            asc.scanLocalAssets(projectId: projectId)
+        }
+    }
 
     private func openFilePicker() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png, .jpeg]
+        panel.allowedContentTypes = [.png, .jpeg, .webP]
         panel.allowsMultipleSelection = true
         panel.canChooseDirectories = false
-        panel.message = "Select \(selectedDevice.label) screenshots (\(selectedDevice.dimensionLabel))"
+        panel.message = "Select screenshot files to add to the asset library"
 
         guard panel.runModal() == .OK else { return }
 
-        var errors: [String] = []
-
-        for url in panel.urls {
-            guard let image = NSImage(contentsOf: url) else {
-                errors.append("\(url.lastPathComponent): could not load image")
-                continue
-            }
-
-            // Get pixel dimensions
-            var pixelWidth = 0
-            var pixelHeight = 0
-            if let rep = image.representations.first, rep.pixelsWide > 0, rep.pixelsHigh > 0 {
-                pixelWidth = rep.pixelsWide
-                pixelHeight = rep.pixelsHigh
-            } else if let tiffData = image.tiffRepresentation,
-                      let bitmap = NSBitmapImageRep(data: tiffData) {
-                pixelWidth = bitmap.pixelsWide
-                pixelHeight = bitmap.pixelsHigh
-            }
-
-            guard selectedDevice.validateDimensions(width: pixelWidth, height: pixelHeight) else {
-                errors.append(
-                    "\(url.lastPathComponent): \(pixelWidth)\u{00d7}\(pixelHeight) \u{2014} need \(selectedDevice.dimensionLabel)"
-                )
-                continue
-            }
-
-            // Skip duplicates (same file path)
-            let binding = screenshotsBinding
-            if binding.wrappedValue.contains(where: { $0.url == url }) {
-                continue
-            }
-
-            binding.wrappedValue.append(LocalScreenshot(id: UUID(), url: url, image: image))
+        guard let projectId = appState.activeProjectId else {
+            importError = "No active project"
+            return
         }
 
-        uploadDone = false
+        importFiles(urls: panel.urls, projectId: projectId)
+    }
+
+    /// Load an image from a URL, using CGImageSource as fallback for formats NSImage may not handle (e.g. WebP).
+    private func loadImage(from url: URL) -> NSImage? {
+        // Try NSImage first
+        if let image = NSImage(contentsOf: url), !image.representations.isEmpty {
+            return image
+        }
+        // Fallback: CGImageSource (handles WebP on macOS 11+)
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+            return nil
+        }
+        return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+    }
+
+    /// Copy image files into the screenshots directory, converting non-PNG formats to PNG.
+    private func importFiles(urls: [URL], projectId: String) {
+        let destDir = BlitzPaths.screenshots(projectId: projectId)
+        let fm = FileManager.default
+        try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+
+        var errors: [String] = []
+        for url in urls {
+            let ext = url.pathExtension.lowercased()
+            if ext == "png" {
+                // Copy PNG directly
+                let dest = destDir.appendingPathComponent(url.lastPathComponent)
+                do {
+                    if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+                    try fm.copyItem(at: url, to: dest)
+                } catch {
+                    errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            } else {
+                // Convert JPEG/WebP to PNG
+                guard let image = loadImage(from: url) else {
+                    errors.append("\(url.lastPathComponent): unsupported format or could not load image")
+                    continue
+                }
+                let pngName = url.deletingPathExtension().lastPathComponent + ".png"
+                let dest = destDir.appendingPathComponent(pngName)
+                do {
+                    guard let tiff = image.tiffRepresentation,
+                          let bitmap = NSBitmapImageRep(data: tiff),
+                          let pngData = bitmap.representation(using: .png, properties: [:]) else {
+                        errors.append("\(url.lastPathComponent): failed to convert to PNG")
+                        continue
+                    }
+                    if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
+                    try pngData.write(to: dest)
+                } catch {
+                    errors.append("\(url.lastPathComponent): \(error.localizedDescription)")
+                }
+            }
+        }
+
+        asc.scanLocalAssets(projectId: projectId)
 
         if !errors.isEmpty {
             importError = "Failed to import \(errors.count) file\(errors.count == 1 ? "" : "s"):\n\n"
@@ -517,50 +597,75 @@ struct ScreenshotsView: View {
         }
     }
 
-    private func uploadToASC() async {
-        let toUpload = Array(screenshots.prefix(10))
-        guard !toUpload.isEmpty else { return }
+    private func handleFinderDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let projectId = appState.activeProjectId else { return false }
 
-        isUploading = true
+        let validExtensions: Set<String> = ["png", "jpg", "jpeg", "webp"]
+        var hasValidProvider = false
 
-        let paths = toUpload.map { $0.url.path }
-        await asc.uploadScreenshots(
-            paths: paths,
+        for provider in providers {
+            if provider.canLoadObject(ofClass: NSURL.self) {
+                hasValidProvider = true
+                let ascRef = asc
+                provider.loadObject(ofClass: NSURL.self) { reading, _ in
+                    guard let url = reading as? URL,
+                          url.isFileURL,
+                          validExtensions.contains(url.pathExtension.lowercased()) else { return }
+
+                    Task { @MainActor in
+                        self.importFiles(urls: [url], projectId: projectId)
+                    }
+                }
+            }
+        }
+        return hasValidProvider
+    }
+
+    private func save() async {
+        await asc.syncTrackToASC(
             displayType: selectedDevice.ascDisplayType,
             locale: "en-US"
         )
-
-        isUploading = false
-
-        if asc.writeError == nil {
-            uploadDone = true
-        }
     }
 }
 
 // MARK: - Drop Delegate
 
-private struct ScreenshotReorderDelegate: DropDelegate {
-    let item: LocalScreenshot
-    @Binding var items: [LocalScreenshot]
-    @Binding var draggedItem: LocalScreenshot?
+private struct TrackSlotDropDelegate: DropDelegate {
+    let targetIndex: Int
+    let displayType: String
+    let asc: ASCManager
+    let localAssets: [LocalScreenshotAsset]
+    @Binding var draggedAssetId: UUID?
+    @Binding var draggedTrackIndex: Int?
+    @Binding var importError: String?
 
     func performDrop(info: DropInfo) -> Bool {
-        draggedItem = nil
-        return true
-    }
-
-    func dropEntered(info: DropInfo) {
-        guard let draggedItem,
-              let fromIndex = items.firstIndex(where: { $0.id == draggedItem.id }),
-              let toIndex = items.firstIndex(where: { $0.id == item.id }),
-              fromIndex != toIndex else { return }
-        withAnimation(.default) {
-            items.move(
-                fromOffsets: IndexSet(integer: fromIndex),
-                toOffset: toIndex > fromIndex ? toIndex + 1 : toIndex
-            )
+        defer {
+            draggedAssetId = nil
+            draggedTrackIndex = nil
         }
+
+        // Drop from asset library
+        if let assetId = draggedAssetId,
+           let asset = localAssets.first(where: { $0.id == assetId }) {
+            let error = asc.addAssetToTrack(displayType: displayType, slotIndex: targetIndex, localPath: asset.url.path)
+            if let error {
+                importError = "Cannot add \(asset.fileName): \(error)"
+                return false
+            }
+            return true
+        }
+
+        // Reorder within track
+        if let fromIndex = draggedTrackIndex, fromIndex != targetIndex {
+            withAnimation {
+                asc.reorderTrack(displayType: displayType, fromIndex: fromIndex, toIndex: targetIndex)
+            }
+            return true
+        }
+
+        return false
     }
 
     func dropUpdated(info: DropInfo) -> DropProposal? {
@@ -568,6 +673,6 @@ private struct ScreenshotReorderDelegate: DropDelegate {
     }
 
     func validateDrop(info: DropInfo) -> Bool {
-        true
+        draggedAssetId != nil || draggedTrackIndex != nil
     }
 }

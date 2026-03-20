@@ -234,6 +234,27 @@ struct SubmitPreviewSheet: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(color.opacity(0.08))
             .clipShape(RoundedRectangle(cornerRadius: 8))
+
+            // Show submission details when rejected
+            if versionState == "REJECTED" {
+                if !asc.latestSubmissionItems.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(asc.latestSubmissionItems) { item in
+                            HStack(spacing: 6) {
+                                Image(systemName: item.attributes.state == "REJECTED" ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                    .foregroundStyle(item.attributes.state == "REJECTED" ? .red : .green)
+                                    .font(.caption)
+                                Text(item.attributes.state?.replacingOccurrences(of: "_", with: " ").capitalized ?? "Unknown")
+                                    .font(.callout)
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.red.opacity(0.05))
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+            }
         }
     }
 

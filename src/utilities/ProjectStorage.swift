@@ -238,6 +238,63 @@ struct ProjectStorage {
         let teenybaseRules = rulesDir.appendingPathComponent("teenybase.md")
         try? Self.teenybaseRulesContent(projectDir: projectDir, projectType: projectType)
             .write(to: teenybaseRules, atomically: true, encoding: .utf8)
+
+        // 4. App Store Review Agent — clone from public repo, symlink into .claude/agents/
+        ensureReviewerAgent(projectDir: projectDir)
+    }
+
+    /// Clone or update the app-store-review-agent repo and symlink the agent
+    /// into .claude/agents/ where Claude Code can discover it.
+    /// Runs git operations on a background queue so it never blocks the UI.
+    func ensureReviewerAgent(projectDir: URL) {
+        let fm = FileManager.default
+        let claudeDir = projectDir.appendingPathComponent(".claude")
+        let agentRepoDir = claudeDir.appendingPathComponent("app-store-review-agent")
+        let agentsDir = claudeDir.appendingPathComponent("agents")
+        let symlinkPath = agentsDir.appendingPathComponent("reviewer.md")
+
+        // If symlink already exists and resolves to a real file, nothing to do.
+        // (Still dispatch a background pull to pick up rule updates.)
+        let symlinkExists = fm.fileExists(atPath: symlinkPath.path)
+
+        DispatchQueue.global(qos: .utility).async {
+            let repoURL = BlitzPaths.reviewerAgentRepo
+
+            if fm.fileExists(atPath: agentRepoDir.appendingPathComponent(".git").path) {
+                // Already cloned — pull latest in background
+                let pull = Process()
+                pull.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                pull.arguments = ["-C", agentRepoDir.path, "pull", "--quiet", "--ff-only"]
+                pull.standardOutput = FileHandle.nullDevice
+                pull.standardError = FileHandle.nullDevice
+                try? pull.run()
+                pull.waitUntilExit()
+            } else {
+                // First time — clone
+                let clone = Process()
+                clone.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                clone.arguments = ["clone", "--quiet", "--depth", "1", repoURL, agentRepoDir.path]
+                clone.standardOutput = FileHandle.nullDevice
+                clone.standardError = FileHandle.nullDevice
+                try? clone.run()
+                clone.waitUntilExit()
+                guard clone.terminationStatus == 0 else {
+                    print("[ProjectStorage] Failed to clone app-store-review-agent")
+                    return
+                }
+            }
+
+            // Create .claude/agents/ and symlink reviewer.md
+            if !symlinkExists {
+                try? fm.createDirectory(at: agentsDir, withIntermediateDirectories: true)
+                // Relative symlink so it works regardless of absolute project path
+                try? fm.createSymbolicLink(
+                    atPath: symlinkPath.path,
+                    withDestinationPath: "../app-store-review-agent/agents/reviewer.md"
+                )
+                print("[ProjectStorage] Reviewer agent installed")
+            }
+        }
     }
 
     private static func claudeMdContent(projectType: ProjectType) -> String {

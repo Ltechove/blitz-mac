@@ -12,6 +12,7 @@ final class MCPBootstrap {
         started = true
 
         installBridgeScript()
+        installClaudeSkills()
 
         let server = MCPServerService(appState: appState)
         self.server = server
@@ -32,6 +33,32 @@ final class MCPBootstrap {
         Task.detached { await server.stop() }
         // Brief wait to allow cleanup
         Thread.sleep(forTimeInterval: 0.1)
+    }
+
+    /// Copies bundled Claude skills to ~/.claude/skills/ so they're globally available.
+    /// Overwrites on every launch to keep skills in sync with the app version.
+    private func installClaudeSkills() {
+        let fm = FileManager.default
+        let destRoot = BlitzPaths.claudeSkills
+
+        // Look for embedded skills in the app bundle
+        guard let bundleSkills = Bundle.main.resourceURL?
+                .appendingPathComponent("claude-skills") else { return }
+        guard fm.fileExists(atPath: bundleSkills.path) else { return }
+
+        do {
+            try fm.createDirectory(at: destRoot, withIntermediateDirectories: true)
+            let skills = try fm.contentsOfDirectory(atPath: bundleSkills.path)
+            for skill in skills {
+                let src = bundleSkills.appendingPathComponent(skill)
+                let dst = destRoot.appendingPathComponent(skill)
+                // Remove old version and copy fresh
+                try? fm.removeItem(at: dst)
+                try fm.copyItem(at: src, to: dst)
+            }
+        } catch {
+            print("[MCP] Failed to install Claude skills: \(error)")
+        }
     }
 
     private func installBridgeScript() {

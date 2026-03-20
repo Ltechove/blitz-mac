@@ -5,6 +5,7 @@ struct ReviewView: View {
 
     private var asc: ASCManager { appState.ascManager }
 
+    @State private var showAppleIDLogin = false
     @State private var ageRatingExpanded = false
     @State private var contactExpanded = true
     @State private var isSavingAgeRating = false
@@ -69,6 +70,18 @@ struct ReviewView: View {
             }
         }
         .task { await asc.fetchTabData(.review) }
+        .sheet(isPresented: $showAppleIDLogin) {
+            AppleIDLoginSheet { session in
+                asc.setIrisSession(session)
+                Task { await asc.fetchRejectionFeedback() }
+            }
+        }
+        .onChange(of: asc.showAppleIDLogin) { _, newValue in
+            if newValue {
+                showAppleIDLogin = true
+                asc.showAppleIDLogin = false
+            }
+        }
     }
 
     @ViewBuilder
@@ -95,6 +108,11 @@ struct ReviewView: View {
                     .padding(16)
                     .background(.background.secondary)
                     .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    // Rejection detail — shown when the version was rejected
+                    if version.attributes.appStoreState == "REJECTED" {
+                        rejectionDetail(version: version)
+                    }
                 }
 
                 // Age Rating
@@ -564,9 +582,270 @@ struct ReviewView: View {
         case "PENDING_DEVELOPER_RELEASE": return ("Pending Release", .yellow)
         case "IN_REVIEW": return ("In Review", .blue)
         case "WAITING_FOR_REVIEW": return ("Waiting", .blue)
+        case "REJECTED": return ("Rejected", .red)
+        case "DEVELOPER_REJECTED": return ("Dev Rejected", .orange)
         case "PREPARE_FOR_SUBMISSION": return ("Draft", .secondary)
         default:
             return (state.replacingOccurrences(of: "_", with: " ").capitalized, .secondary)
         }
+    }
+
+    // MARK: - Rejection Detail
+
+    @ViewBuilder
+    private func rejectionDetail(version: ASCAppStoreVersion) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.title2)
+                    .foregroundStyle(.red)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Version \(version.attributes.versionString) was rejected by Apple")
+                        .font(.callout.weight(.semibold))
+                    if let sub = asc.reviewSubmissions.first, let date = sub.attributes.submittedDate {
+                        Text("Last submitted \(ascShortDate(date))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            // Review submission timeline
+            if !asc.reviewSubmissions.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Submission History")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(asc.reviewSubmissions.prefix(5)) { sub in
+                        HStack(spacing: 8) {
+                            Circle()
+                                .fill(sub.attributes.state == "COMPLETE" ? Color.green : .blue)
+                                .frame(width: 6, height: 6)
+                            Text(sub.attributes.state?.replacingOccurrences(of: "_", with: " ").capitalized ?? "Unknown")
+                                .font(.caption)
+                            Spacer()
+                            if let date = sub.attributes.submittedDate {
+                                Text(ascShortDate(date))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Submission item states
+            if !asc.latestSubmissionItems.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Review Items")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+
+                    ForEach(asc.latestSubmissionItems) { item in
+                        HStack(spacing: 6) {
+                            Image(systemName: item.attributes.state == "REJECTED" ? "xmark.circle.fill" : "checkmark.circle.fill")
+                                .foregroundStyle(item.attributes.state == "REJECTED" ? .red : .green)
+                                .font(.caption2)
+                            Text(item.attributes.state?.replacingOccurrences(of: "_", with: " ").capitalized ?? "Unknown")
+                                .font(.caption)
+                            if item.attributes.resolved == true {
+                                Text("Resolved")
+                                    .font(.caption2)
+                                    .padding(.horizontal, 5)
+                                    .padding(.vertical, 1)
+                                    .background(Color.green.opacity(0.15))
+                                    .foregroundStyle(.green)
+                                    .clipShape(Capsule())
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Developer's submitted notes
+            if let notes = asc.reviewDetail?.attributes.notes, !notes.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Your Notes to Apple")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Text(notes)
+                        .font(.callout)
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.background.tertiary)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                }
+            }
+
+            // Apple's Feedback (from iris API)
+            appleFeedbackSection()
+
+            Text("Update your review info below and re-submit when ready.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .background(Color.red.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color.red.opacity(0.15), lineWidth: 1)
+        )
+    }
+
+    @ViewBuilder
+    private func appleFeedbackSection() -> some View {
+        let hasLiveData = !asc.rejectionReasons.isEmpty || !asc.rejectionMessages.isEmpty
+        let hasCache = asc.cachedFeedback != nil
+
+        Divider()
+
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Apple's Feedback")
+                .font(.callout.weight(.semibold))
+
+            if asc.isLoadingIrisFeedback {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Loading feedback…")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                }
+            } else if hasLiveData {
+                liveFeedbackView()
+            } else if hasCache {
+                cachedFeedbackView(asc.cachedFeedback!)
+            } else if let error = asc.irisFeedbackError {
+                HStack(spacing: 8) {
+                    Image(systemName: "exclamationmark.triangle")
+                        .foregroundStyle(.orange)
+                    Text(error).font(.caption).foregroundStyle(.secondary)
+                }
+                signInPrompt()
+            } else {
+                signInPrompt()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func signInPrompt() -> some View {
+        switch asc.irisSessionState {
+        case .noSession, .unknown:
+            HStack(spacing: 10) {
+                Image(systemName: "person.badge.key")
+                    .font(.title3)
+                    .foregroundStyle(.secondary)
+                Text("Sign in with your Apple ID to see Apple's detailed review feedback.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Sign In") { showAppleIDLogin = true }
+                    .buttonStyle(.bordered)
+            }
+            .padding(10)
+            .background(.background.tertiary)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        case .expired:
+            HStack(spacing: 10) {
+                Image(systemName: "clock.badge.exclamationmark")
+                    .font(.title3)
+                    .foregroundStyle(.orange)
+                Text("Apple ID session expired.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Sign In Again") { showAppleIDLogin = true }
+                    .buttonStyle(.bordered)
+            }
+            .padding(10)
+            .background(.background.tertiary)
+            .clipShape(RoundedRectangle(cornerRadius: 8))
+        case .valid:
+            Text("No rejection feedback found in the Resolution Center.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    @ViewBuilder
+    private func liveFeedbackView() -> some View {
+        if !asc.rejectionReasons.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(asc.rejectionReasons) { rejection in
+                    ForEach(rejection.attributes.reasons ?? [], id: \.reasonCode) { reason in
+                        feedbackReasonCard(section: reason.reasonSection, description: reason.reasonDescription, code: reason.reasonCode)
+                    }
+                }
+            }
+        }
+        if !asc.rejectionMessages.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Reviewer Messages")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(asc.rejectionMessages) { msg in
+                    feedbackMessageCard(body: msg.attributes.messageBody.map { htmlToPlainText($0) }, date: msg.attributes.createdDate)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cachedFeedbackView(_ cache: IrisFeedbackCache) -> some View {
+        if !cache.reasons.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(cache.reasons, id: \.code) { reason in
+                    feedbackReasonCard(section: reason.section, description: reason.description, code: reason.code)
+                }
+            }
+        }
+        if !cache.messages.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Reviewer Messages")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                ForEach(cache.messages, id: \.body) { msg in
+                    feedbackMessageCard(body: msg.body, date: msg.date)
+                }
+            }
+        }
+        Text("Last fetched \(ascLongDate(ISO8601DateFormatter().string(from: cache.fetchedAt)))")
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+    }
+
+    private func feedbackReasonCard(section: String?, description: String?, code: String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let section, !section.isEmpty {
+                Text(section).font(.callout.weight(.medium)).foregroundStyle(.red)
+            }
+            if let desc = description, !desc.isEmpty {
+                Text(desc).font(.callout).textSelection(.enabled)
+            }
+            if let code, !code.isEmpty {
+                Text("Code: \(code)").font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.tertiary)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private func feedbackMessageCard(body: String?, date: String?) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let body, !body.isEmpty {
+                Text(body).font(.callout).textSelection(.enabled)
+            }
+            if let date {
+                Text(ascLongDate(date)).font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.background.tertiary)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 }

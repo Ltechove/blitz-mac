@@ -84,3 +84,23 @@ func ascLongDate(_ iso: String) -> String {
     }
     return iso
 }
+
+/// Converts HTML to plain text using NSAttributedString, with regex fallback.
+func htmlToPlainText(_ html: String) -> String {
+    if let data = html.data(using: .utf8),
+       let attributed = try? NSAttributedString(
+           data: data,
+           options: [
+               .documentType: NSAttributedString.DocumentType.html,
+               .characterEncoding: String.Encoding.utf8.rawValue,
+           ],
+           documentAttributes: nil
+       ) {
+        return attributed.string.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    // Regex fallback: strip tags
+    return html
+        .replacingOccurrences(of: "<br\\s*/?>", with: "\n", options: .regularExpression)
+        .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+}

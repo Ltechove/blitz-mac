@@ -37,4 +37,20 @@ enum BlitzPaths {
         root.appendingPathComponent("idb-companion/bin/idb_companion")
     }
 
+    /// Node.js runtime: ~/.blitz/node-runtime/bin/
+    static var nodeDir: URL { root.appendingPathComponent("node-runtime/bin") }
+
+    /// Screenshots directory for a project: ~/.blitz/projects/{projectId}/.blitz/screenshots/
+    static func screenshots(projectId: String) -> URL {
+        projects.appendingPathComponent(projectId).appendingPathComponent(".blitz/screenshots")
+    }
+
+    /// Claude skills directory: ~/.claude/skills/
+    static var claudeSkills: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/skills")
+    }
+
+    /// App Store Review Agent repo URL
+    static let reviewerAgentRepo = "https://github.com/blitzdotdev/app-store-review-agent.git"
 }

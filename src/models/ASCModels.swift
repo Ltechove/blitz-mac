@@ -483,3 +483,126 @@ struct ASCProfile: Decodable, Identifiable {
     }
     let attributes: Attributes
 }
+
+// MARK: - Iris Session (Apple ID cookie-based auth for internal APIs)
+
+struct IrisSession: Codable {
+    var cookies: [IrisCookie]
+    var capturedAt: Date
+
+    struct IrisCookie: Codable {
+        let name: String
+        let value: String
+        let domain: String
+        let path: String
+    }
+
+    static func load() -> IrisSession? {
+        let url = sessionURL()
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(IrisSession.self, from: data)
+    }
+
+    func save() throws {
+        let url = Self.sessionURL()
+        let dir = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let data = try JSONEncoder().encode(self)
+        try data.write(to: url, options: .atomic)
+        // Set file permissions to 0600 (owner read/write only)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: url.path
+        )
+    }
+
+    static func delete() {
+        try? FileManager.default.removeItem(at: sessionURL())
+    }
+
+    private static func sessionURL() -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".blitz/iris-session.json")
+    }
+}
+
+// MARK: - Iris API Response Models
+
+struct IrisResolutionCenterThread: Decodable, Identifiable {
+    let id: String
+    let attributes: Attributes
+
+    struct Attributes: Decodable {
+        let state: String?
+        let createdDate: String?
+    }
+}
+
+struct IrisResolutionCenterMessage: Decodable, Identifiable {
+    let id: String
+    let attributes: Attributes
+
+    struct Attributes: Decodable {
+        let messageBody: String?
+        let createdDate: String?
+    }
+}
+
+struct IrisReviewRejection: Decodable, Identifiable {
+    let id: String
+    let attributes: Attributes
+
+    struct Attributes: Decodable {
+        let reasons: [Reason]?
+    }
+
+    struct Reason: Decodable {
+        let reasonSection: String?
+        let reasonDescription: String?
+        let reasonCode: String?
+    }
+}
+
+// MARK: - Iris Feedback Cache
+
+struct IrisFeedbackCache: Codable {
+    let appId: String
+    let versionString: String
+    let fetchedAt: Date
+    let messages: [CachedMessage]
+    let reasons: [CachedReason]
+
+    struct CachedMessage: Codable {
+        let body: String
+        let date: String?
+    }
+
+    struct CachedReason: Codable {
+        let section: String
+        let description: String
+        let code: String
+    }
+
+    // MARK: - Persistence
+
+    func save() throws {
+        let url = Self.cacheURL(appId: appId, versionString: versionString)
+        let dir = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(self)
+        try data.write(to: url, options: .atomic)
+    }
+
+    static func load(appId: String, versionString: String) -> IrisFeedbackCache? {
+        let url = cacheURL(appId: appId, versionString: versionString)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        return try? JSONDecoder().decode(IrisFeedbackCache.self, from: data)
+    }
+
+    private static func cacheURL(appId: String, versionString: String) -> URL {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        return home.appendingPathComponent(".blitz/iris-cache/\(appId)/\(versionString).json")
+    }
+}

@@ -34,7 +34,8 @@ actor MCPToolExecutor {
         // Pre-navigate for ASC form tools so the user sees the target tab before approving
         var previousTab: AppTab?
         if name == "asc_fill_form" || name == "asc_upload_screenshots" || name == "asc_open_submit_preview"
-            || name == "asc_create_iap" || name == "asc_create_subscription" || name == "asc_set_app_price" {
+            || name == "asc_create_iap" || name == "asc_create_subscription" || name == "asc_set_app_price"
+            || name == "screenshots_add_asset" || name == "screenshots_set_track" || name == "screenshots_save" {
             previousTab = await preNavigateASCTool(name: name, arguments: arguments)
         }
 
@@ -79,7 +80,8 @@ actor MCPToolExecutor {
             }
         } else if name == "asc_open_submit_preview" {
             targetTab = .ascOverview
-        } else if name == "asc_upload_screenshots" {
+        } else if name == "asc_upload_screenshots" || name == "screenshots_add_asset"
+                    || name == "screenshots_set_track" || name == "screenshots_save" {
             targetTab = .screenshots
         } else if name == "asc_set_app_price" {
             targetTab = .monetization
@@ -224,6 +226,10 @@ actor MCPToolExecutor {
 
 
 
+        // -- Rejection Feedback --
+        case "get_rejection_feedback":
+            return try await executeGetRejectionFeedback(arguments)
+
         // -- Tab State --
         case "get_tab_state":
             return try await executeGetTabState(arguments)
@@ -233,6 +239,12 @@ actor MCPToolExecutor {
             return try await executeASCFillForm(arguments)
         case "asc_upload_screenshots":
             return try await executeASCUploadScreenshots(arguments)
+        case "screenshots_add_asset":
+            return try await executeScreenshotsAddAsset(arguments)
+        case "screenshots_set_track":
+            return try await executeScreenshotsSetTrack(arguments)
+        case "screenshots_save":
+            return try await executeScreenshotsSave(arguments)
         case "asc_open_submit_preview":
             return await executeASCOpenSubmitPreview()
         case "asc_create_iap":
@@ -769,6 +781,89 @@ actor MCPToolExecutor {
         return mcpJSON(["success": true, "uploaded": paths.count])
     }
 
+    private func executeScreenshotsAddAsset(_ args: [String: Any]) async throws -> [String: Any] {
+        guard let sourcePath = args["sourcePath"] as? String else {
+            throw MCPServerService.MCPError.invalidToolArgs
+        }
+        let expanded = (sourcePath as NSString).expandingTildeInPath
+        guard FileManager.default.fileExists(atPath: expanded) else {
+            return mcpText("Error: file not found at \(expanded)")
+        }
+
+        guard let projectId = await MainActor.run(body: { appState.activeProjectId }) else {
+            return mcpText("Error: no active project")
+        }
+
+        let destDir = BlitzPaths.screenshots(projectId: projectId)
+        let fm = FileManager.default
+        try? fm.createDirectory(at: destDir, withIntermediateDirectories: true)
+
+        let fileName = args["fileName"] as? String ?? (expanded as NSString).lastPathComponent
+        let dest = destDir.appendingPathComponent(fileName)
+
+        do {
+            if fm.fileExists(atPath: dest.path) {
+                try fm.removeItem(at: dest)
+            }
+            try fm.copyItem(atPath: expanded, toPath: dest.path)
+        } catch {
+            return mcpText("Error copying file: \(error.localizedDescription)")
+        }
+
+        await MainActor.run { appState.ascManager.scanLocalAssets(projectId: projectId) }
+        return mcpJSON(["success": true, "fileName": fileName])
+    }
+
+    private func executeScreenshotsSetTrack(_ args: [String: Any]) async throws -> [String: Any] {
+        guard let assetFileName = args["assetFileName"] as? String else {
+            throw MCPServerService.MCPError.invalidToolArgs
+        }
+        guard let slotRaw = args["slotIndex"] as? Int ?? (args["slotIndex"] as? Double).map({ Int($0) }),
+              slotRaw >= 1 && slotRaw <= 10 else {
+            return mcpText("Error: slotIndex must be between 1 and 10")
+        }
+        let slotIndex = slotRaw - 1  // Convert to 0-based
+        let displayType = args["displayType"] as? String ?? "APP_IPHONE_67"
+
+        guard let projectId = await MainActor.run(body: { appState.activeProjectId }) else {
+            return mcpText("Error: no active project")
+        }
+
+        let dir = BlitzPaths.screenshots(projectId: projectId)
+        let filePath = dir.appendingPathComponent(assetFileName).path
+
+        guard FileManager.default.fileExists(atPath: filePath) else {
+            return mcpText("Error: asset '\(assetFileName)' not found in local screenshots library")
+        }
+
+        let error = await MainActor.run {
+            appState.ascManager.addAssetToTrack(displayType: displayType, slotIndex: slotIndex, localPath: filePath)
+        }
+        if let error {
+            return mcpText("Error: \(error)")
+        }
+        return mcpJSON(["success": true, "slot": slotRaw])
+    }
+
+    private func executeScreenshotsSave(_ args: [String: Any]) async throws -> [String: Any] {
+        let displayType = args["displayType"] as? String ?? "APP_IPHONE_67"
+        let locale = args["locale"] as? String ?? "en-US"
+
+        let hasChanges = await MainActor.run { appState.ascManager.hasUnsavedChanges(displayType: displayType) }
+        guard hasChanges else {
+            return mcpJSON(["success": true, "message": "No changes to save"])
+        }
+
+        await appState.ascManager.syncTrackToASC(displayType: displayType, locale: locale)
+
+        if let err = await checkASCWriteError(tab: "screenshots") { return err }
+
+        let slotCount = await MainActor.run {
+            (appState.ascManager.trackSlots[displayType] ?? []).compactMap { $0 }.count
+        }
+        return mcpJSON(["success": true, "synced": slotCount])
+    }
+
     private func executeASCOpenSubmitPreview() async -> [String: Any] {
         // Navigation already done by preNavigateASCTool
         var readiness = await MainActor.run { appState.ascManager.submissionReadiness }
@@ -1005,6 +1100,51 @@ actor MCPToolExecutor {
 
     // MARK: - Tab State Tool
 
+    private func executeGetRejectionFeedback(_ args: [String: Any]) async throws -> [String: Any] {
+        let raw = await MainActor.run { () -> [String: Any] in
+            let asc = appState.ascManager
+            guard let appId = asc.app?.id else {
+                return ["error": "No app connected. Set up ASC credentials first."]
+            }
+
+            let requestedVersion = args["version"] as? String
+            let version: String
+            if let v = requestedVersion {
+                version = v
+            } else if let rejected = asc.appStoreVersions.first(where: { $0.attributes.appStoreState == "REJECTED" }) {
+                version = rejected.attributes.versionString
+            } else {
+                return ["error": "No rejected version found.", "appId": appId] as [String: Any]
+            }
+
+            if let cached = IrisFeedbackCache.load(appId: appId, versionString: version) {
+                let reasons = cached.reasons.map { r in
+                    ["section": r.section, "description": r.description, "code": r.code]
+                }
+                let messages = cached.messages.map { m -> [String: String] in
+                    var msg = ["body": m.body]
+                    if let d = m.date { msg["date"] = d }
+                    return msg
+                }
+                return [
+                    "appId": appId,
+                    "version": version,
+                    "fetchedAt": ISO8601DateFormatter().string(from: cached.fetchedAt),
+                    "reasons": reasons,
+                    "messages": messages,
+                    "source": "cache"
+                ] as [String: Any]
+            }
+
+            return [
+                "error": "No rejection feedback cached for version \(version). The user needs to sign in with their Apple ID in the ASC Overview tab to fetch feedback.",
+                "appId": appId,
+                "version": version
+            ] as [String: Any]
+        }
+        return mcpJSON(raw)
+    }
+
     private func executeGetTabState(_ args: [String: Any]) async throws -> [String: Any] {
         let tabStr = args["tab"] as? String
         let tab: AppTab
@@ -1095,6 +1235,15 @@ actor MCPToolExecutor {
         }
         if let error = asc.submissionError {
             r["submissionError"] = error
+        }
+        // Include rejection feedback hint if available
+        if let cached = asc.cachedFeedback {
+            r["rejectionFeedback"] = [
+                "version": cached.versionString,
+                "reasonCount": cached.reasons.count,
+                "messageCount": cached.messages.count,
+                "hint": "Use get_rejection_feedback tool for full details"
+            ] as [String: Any]
         }
         return r
     }

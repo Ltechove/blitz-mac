@@ -24,6 +24,7 @@ let package = Package(
                 .linkedFramework("CoreMediaIO"),
                 .linkedFramework("AVFoundation"),
                 .linkedFramework("AppKit"),
+                .linkedFramework("WebKit"),
             ]
         ),
         .testTarget(

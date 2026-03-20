@@ -1,4 +1,27 @@
 import Foundation
+import AppKit
+import ImageIO
+
+// MARK: - Screenshot Track Models
+
+struct TrackSlot: Identifiable, Equatable {
+    let id: String              // UUID for local, ASC id for uploaded
+    var localPath: String?      // file path for local assets
+    var localImage: NSImage?    // loaded thumbnail
+    var ascScreenshot: ASCScreenshot?  // present if from ASC
+    var isFromASC: Bool         // true if this slot was loaded from ASC
+
+    static func == (lhs: TrackSlot, rhs: TrackSlot) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
+struct LocalScreenshotAsset: Identifiable {
+    let id: UUID
+    let url: URL
+    let image: NSImage
+    let fileName: String
+}
 
 @MainActor
 @Observable
@@ -54,6 +77,23 @@ final class ASCManager {
     var submissionError: String?
     var writeError: String?  // Inline error for write operations (does not replace tab content)
 
+    // Review submission history (for rejection tracking)
+    var reviewSubmissions: [ASCReviewSubmission] = []
+    var latestSubmissionItems: [ASCReviewSubmissionItem] = []
+
+    // Iris (Apple ID session) — rejection feedback from internal API
+    enum IrisSessionState { case unknown, noSession, valid, expired }
+    var irisSession: IrisSession?
+    private(set) var irisService: IrisService?
+    var irisSessionState: IrisSessionState = .unknown
+    var isLoadingIrisFeedback = false
+    var irisFeedbackError: String?
+    var showAppleIDLogin = false
+    var resolutionCenterThreads: [IrisResolutionCenterThread] = []
+    var rejectionMessages: [IrisResolutionCenterMessage] = []
+    var rejectionReasons: [IrisReviewRejection] = []
+    var cachedFeedback: IrisFeedbackCache?  // loaded from disk, survives session expiry
+
     // App icon status (set externally; nil = not checked / missing)
     var appIconStatus: String?
 
@@ -71,6 +111,12 @@ final class ASCManager {
     }
     var buildPipelinePhase: BuildPipelinePhase = .idle
     var buildPipelineMessage: String = ""  // Latest progress line from the build
+
+    // Screenshot track state per device type
+    var trackSlots: [String: [TrackSlot?]] = [:]        // keyed by ascDisplayType, 10-element arrays
+    var savedTrackState: [String: [TrackSlot?]] = [:]   // snapshot after last load/save
+    var localScreenshotAssets: [LocalScreenshotAsset] = []
+    var isSyncing = false
 
     /// Age rating is "configured" only if the enum fields have actual values (not nil).
     /// ASC returns the declaration object with nil fields by default — submitting with
@@ -252,6 +298,178 @@ final class ASCManager {
         tabError = [:]
         loadedTabs = []
         loadedProjectId = nil
+        // Clear iris data but keep session (it's account-wide, not project-specific)
+        resolutionCenterThreads = []
+        rejectionMessages = []
+        rejectionReasons = []
+        cachedFeedback = nil
+        isLoadingIrisFeedback = false
+        irisFeedbackError = nil
+    }
+
+    // MARK: - Iris Session (Apple ID auth for rejection feedback)
+
+    private func irisLog(_ msg: String) {
+        let logPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".blitz/iris-debug.log")
+        let ts = ISO8601DateFormatter().string(from: Date())
+        let line = "[\(ts)] \(msg)\n"
+        if let data = line.data(using: .utf8) {
+            if FileManager.default.fileExists(atPath: logPath.path) {
+                if let handle = try? FileHandle(forWritingTo: logPath) {
+                    handle.seekToEndOfFile()
+                    handle.write(data)
+                    handle.closeFile()
+                }
+            } else {
+                let dir = logPath.deletingLastPathComponent()
+                try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+                try? data.write(to: logPath)
+            }
+        }
+    }
+
+    func loadIrisSession() {
+        irisLog("ASCManager.loadIrisSession: starting")
+        guard let loaded = IrisSession.load() else {
+            irisLog("ASCManager.loadIrisSession: no session file found")
+            irisSessionState = .noSession
+            irisSession = nil
+            irisService = nil
+            return
+        }
+        // No time-based expiry — we trust the session until a 401 proves otherwise
+        irisLog("ASCManager.loadIrisSession: loaded session with \(loaded.cookies.count) cookies, capturedAt=\(loaded.capturedAt)")
+        irisSession = loaded
+        irisService = IrisService(session: loaded)
+        irisSessionState = .valid
+        irisLog("ASCManager.loadIrisSession: session valid, irisService created")
+    }
+
+    func setIrisSession(_ session: IrisSession) {
+        irisLog("ASCManager.setIrisSession: \(session.cookies.count) cookies")
+        do {
+            try session.save()
+            irisLog("ASCManager.setIrisSession: saved to disk")
+        } catch {
+            irisLog("ASCManager.setIrisSession: save FAILED: \(error)")
+            irisFeedbackError = "Failed to save session: \(error.localizedDescription)"
+            return
+        }
+        irisSession = session
+        irisService = IrisService(session: session)
+        irisSessionState = .valid
+        irisLog("ASCManager.setIrisSession: state set to .valid")
+    }
+
+    func clearIrisSession() {
+        irisLog("ASCManager.clearIrisSession")
+        IrisSession.delete()
+        irisSession = nil
+        irisService = nil
+        irisSessionState = .noSession
+        resolutionCenterThreads = []
+        rejectionMessages = []
+        rejectionReasons = []
+    }
+
+    /// Loads cached feedback from disk for the given rejected version. No auth needed.
+    func loadCachedFeedback(appId: String, versionString: String) {
+        irisLog("ASCManager.loadCachedFeedback: appId=\(appId) version=\(versionString)")
+        if let cached = IrisFeedbackCache.load(appId: appId, versionString: versionString) {
+            cachedFeedback = cached
+            irisLog("ASCManager.loadCachedFeedback: loaded \(cached.reasons.count) reasons, \(cached.messages.count) messages, fetched \(cached.fetchedAt)")
+        } else {
+            irisLog("ASCManager.loadCachedFeedback: no cache found")
+            cachedFeedback = nil
+        }
+    }
+
+    func fetchRejectionFeedback() async {
+        irisLog("ASCManager.fetchRejectionFeedback: irisService=\(irisService != nil), appId=\(app?.id ?? "nil")")
+        guard let irisService, let appId = app?.id else {
+            irisLog("ASCManager.fetchRejectionFeedback: guard failed, returning")
+            return
+        }
+
+        // Determine version string for cache
+        let rejectedVersion = appStoreVersions.first(where: {
+            $0.attributes.appStoreState == "REJECTED"
+        })?.attributes.versionString
+
+        isLoadingIrisFeedback = true
+        irisFeedbackError = nil
+
+        do {
+            let threads = try await irisService.fetchResolutionCenterThreads(appId: appId)
+            irisLog("ASCManager.fetchRejectionFeedback: got \(threads.count) threads")
+            resolutionCenterThreads = threads
+
+            if let latestThread = threads.first {
+                irisLog("ASCManager.fetchRejectionFeedback: fetching messages+rejections for thread \(latestThread.id)")
+                let result = try await irisService.fetchMessagesAndRejections(threadId: latestThread.id)
+                rejectionMessages = result.messages
+                rejectionReasons = result.rejections
+                irisLog("ASCManager.fetchRejectionFeedback: got \(rejectionMessages.count) messages, \(rejectionReasons.count) rejections")
+
+                // Write cache
+                if let version = rejectedVersion {
+                    let cache = buildFeedbackCache(appId: appId, versionString: version)
+                    do {
+                        try cache.save()
+                        cachedFeedback = cache
+                        irisLog("ASCManager.fetchRejectionFeedback: cache saved for \(version)")
+                    } catch {
+                        irisLog("ASCManager.fetchRejectionFeedback: cache save failed: \(error)")
+                    }
+                }
+            } else {
+                irisLog("ASCManager.fetchRejectionFeedback: no threads found")
+                rejectionMessages = []
+                rejectionReasons = []
+            }
+        } catch let error as IrisError {
+            irisLog("ASCManager.fetchRejectionFeedback: IrisError: \(error)")
+            if case .sessionExpired = error {
+                irisSessionState = .expired
+                irisSession = nil
+                self.irisService = nil
+            } else {
+                irisFeedbackError = error.localizedDescription
+            }
+        } catch {
+            irisLog("ASCManager.fetchRejectionFeedback: error: \(error)")
+            irisFeedbackError = error.localizedDescription
+        }
+
+        isLoadingIrisFeedback = false
+        irisLog("ASCManager.fetchRejectionFeedback: done")
+    }
+
+    /// Builds a cache object from current in-memory rejection data.
+    private func buildFeedbackCache(appId: String, versionString: String) -> IrisFeedbackCache {
+        let msgs = rejectionMessages.map { msg in
+            IrisFeedbackCache.CachedMessage(
+                body: msg.attributes.messageBody.map { htmlToPlainText($0) } ?? "",
+                date: msg.attributes.createdDate
+            )
+        }
+        let reasons = rejectionReasons.flatMap { rejection in
+            (rejection.attributes.reasons ?? []).map { r in
+                IrisFeedbackCache.CachedReason(
+                    section: r.reasonSection ?? "",
+                    description: r.reasonDescription ?? "",
+                    code: r.reasonCode ?? ""
+                )
+            }
+        }
+        return IrisFeedbackCache(
+            appId: appId,
+            versionString: versionString,
+            fetchedAt: Date(),
+            messages: msgs,
+            reasons: reasons
+        )
     }
 
     func saveCredentials(_ creds: ASCCredentials, projectId: String, bundleId: String?) async throws {
@@ -361,6 +579,14 @@ final class ASCManager {
                 appInfoLocalization = try? await service.fetchAppInfoLocalization(appInfoId: infoId)
             }
             builds = try await service.fetchBuilds(appId: appId)
+            // Fetch review submission history (for rejection details)
+            let rejectedState = versions.first?.attributes.appStoreState
+            if rejectedState == "REJECTED" || rejectedState == "DEVELOPER_REJECTED" {
+                reviewSubmissions = (try? await service.fetchReviewSubmissions(appId: appId)) ?? []
+                if let latest = reviewSubmissions.first {
+                    latestSubmissionItems = (try? await service.fetchReviewSubmissionItems(submissionId: latest.id)) ?? []
+                }
+            }
 
             // Check monetization status — skip if already set (avoids race with in-flight fetches overwriting optimistic updates from setPriceFree/setAppPrice)
             if monetizationStatus == nil {
@@ -414,6 +640,11 @@ final class ASCManager {
                 ageRatingDeclaration = try? await service.fetchAgeRating(appInfoId: infoId)
             }
             builds = try await service.fetchBuilds(appId: appId)
+            // Fetch review submission history (for rejection details)
+            reviewSubmissions = (try? await service.fetchReviewSubmissions(appId: appId)) ?? []
+            if let latest = reviewSubmissions.first {
+                latestSubmissionItems = (try? await service.fetchReviewSubmissionItems(submissionId: latest.id)) ?? []
+            }
 
         case .monetization:
             appPricePoints = try await service.fetchAppPricePoints(appId: appId)
@@ -949,6 +1180,231 @@ final class ASCManager {
         } catch {
             writeError = error.localizedDescription
         }
+    }
+
+    // MARK: - Screenshot Track
+
+    func hasUnsavedChanges(displayType: String) -> Bool {
+        let current = trackSlots[displayType] ?? Array(repeating: nil, count: 10)
+        let saved = savedTrackState[displayType] ?? Array(repeating: nil, count: 10)
+        return zip(current, saved).contains { c, s in c?.id != s?.id }
+    }
+
+    func loadTrackFromASC(displayType: String) {
+        let set = screenshotSets.first { $0.attributes.screenshotDisplayType == displayType }
+        var slots: [TrackSlot?] = Array(repeating: nil, count: 10)
+        if let set, let shots = screenshots[set.id] {
+            for (i, shot) in shots.prefix(10).enumerated() {
+                slots[i] = TrackSlot(
+                    id: shot.id,
+                    localPath: nil,
+                    localImage: nil,
+                    ascScreenshot: shot,
+                    isFromASC: true
+                )
+            }
+        }
+        trackSlots[displayType] = slots
+        savedTrackState[displayType] = slots
+    }
+
+    func syncTrackToASC(displayType: String, locale: String) async {
+        guard let service else { writeError = "ASC service not configured"; return }
+        isSyncing = true
+        writeError = nil
+
+        // Ensure localizations are loaded
+        if localizations.isEmpty, let versionId = appStoreVersions.first?.id {
+            localizations = (try? await service.fetchLocalizations(versionId: versionId)) ?? []
+        }
+        if localizations.isEmpty, let appId = app?.id {
+            let versions = (try? await service.fetchAppStoreVersions(appId: appId)) ?? []
+            appStoreVersions = versions
+            if let versionId = versions.first?.id {
+                localizations = (try? await service.fetchLocalizations(versionId: versionId)) ?? []
+            }
+        }
+        guard let loc = localizations.first(where: { $0.attributes.locale == locale })
+                ?? localizations.first else {
+            writeError = "No localizations found for locale '\(locale)'."
+            isSyncing = false
+            return
+        }
+
+        let current = trackSlots[displayType] ?? Array(repeating: nil, count: 10)
+        let saved = savedTrackState[displayType] ?? Array(repeating: nil, count: 10)
+
+        do {
+            // 1. Delete screenshots that were in saved state but not in current track
+            let savedIds = Set(saved.compactMap { $0?.id })
+            let currentIds = Set(current.compactMap { $0?.id })
+            let toDelete = savedIds.subtracting(currentIds)
+            for id in toDelete {
+                try await service.deleteScreenshot(screenshotId: id)
+            }
+
+            // 2. Check if existing ASC screenshots need reorder
+            let currentASCIds = current.compactMap { slot -> String? in
+                guard let slot, slot.isFromASC else { return nil }
+                return slot.id
+            }
+            let savedASCIds = saved.compactMap { slot -> String? in
+                guard let slot, slot.isFromASC else { return nil }
+                return slot.id
+            }
+            let remainingASCIds = Set(currentASCIds)
+            let reorderNeeded = currentASCIds != savedASCIds.filter { remainingASCIds.contains($0) }
+
+            if reorderNeeded {
+                // Delete remaining ASC screenshots and re-upload in new order
+                for id in currentASCIds {
+                    if !toDelete.contains(id) {
+                        try await service.deleteScreenshot(screenshotId: id)
+                    }
+                }
+            }
+
+            // 3. Upload local assets + re-upload reordered ASC screenshots
+            for slot in current {
+                guard let slot else { continue }
+                if let path = slot.localPath {
+                    try await service.uploadScreenshot(localizationId: loc.id, path: path, displayType: displayType)
+                } else if reorderNeeded, slot.isFromASC, let ascShot = slot.ascScreenshot {
+                    // For reordered ASC screenshots, we need the original file
+                    // Download from ASC URL and re-upload
+                    if let url = ascShot.imageURL,
+                       let data = try? Data(contentsOf: url),
+                       let fileName = ascShot.attributes.fileName {
+                        let tmpPath = FileManager.default.temporaryDirectory.appendingPathComponent(fileName).path
+                        try data.write(to: URL(fileURLWithPath: tmpPath))
+                        try await service.uploadScreenshot(localizationId: loc.id, path: tmpPath, displayType: displayType)
+                        try? FileManager.default.removeItem(atPath: tmpPath)
+                    }
+                }
+            }
+
+            // 4. Reload from ASC
+            let sets = try await service.fetchScreenshotSets(localizationId: loc.id)
+            screenshotSets = sets
+            for set in sets {
+                screenshots[set.id] = try await service.fetchScreenshots(setId: set.id)
+            }
+            loadTrackFromASC(displayType: displayType)
+        } catch {
+            writeError = error.localizedDescription
+        }
+
+        isSyncing = false
+    }
+
+    func deleteScreenshot(screenshotId: String) async throws {
+        guard let service else { throw ASCError.notFound("ASC service not configured") }
+        try await service.deleteScreenshot(screenshotId: screenshotId)
+    }
+
+    func scanLocalAssets(projectId: String) {
+        let dir = BlitzPaths.screenshots(projectId: projectId)
+        let fm = FileManager.default
+        guard let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) else {
+            localScreenshotAssets = []
+            return
+        }
+        let imageExtensions: Set<String> = ["png", "jpg", "jpeg", "webp"]
+        localScreenshotAssets = files
+            .filter { imageExtensions.contains($0.pathExtension.lowercased()) }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+            .compactMap { url in
+                // Try NSImage first, fall back to CGImageSource for WebP
+                var image = NSImage(contentsOf: url)
+                if image == nil || image!.representations.isEmpty {
+                    if let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+                       let cgImage = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                        image = NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
+                    }
+                }
+                guard let image else { return nil }
+                return LocalScreenshotAsset(id: UUID(), url: url, image: image, fileName: url.lastPathComponent)
+            }
+    }
+
+    /// Validate pixel dimensions for a display type. Returns nil if valid, or an error string.
+    static func validateDimensions(width: Int, height: Int, displayType: String) -> String? {
+        switch displayType {
+        case "APP_IPHONE_67":
+            if width == 1242 && height == 2688 { return nil }
+            return "\(width)\u{00d7}\(height) — need 1242\u{00d7}2688 for iPhone"
+        case "APP_IPAD_PRO_3GEN_129":
+            if width == 2048 && height == 2732 { return nil }
+            return "\(width)\u{00d7}\(height) — need 2048\u{00d7}2732 for iPad"
+        case "APP_DESKTOP":
+            let valid: Set<String> = ["1280x800", "1440x900", "2560x1600", "2880x1800"]
+            if valid.contains("\(width)x\(height)") { return nil }
+            return "\(width)\u{00d7}\(height) — need 1280\u{00d7}800, 1440\u{00d7}900, 2560\u{00d7}1600, or 2880\u{00d7}1800 for Mac"
+        default:
+            return nil
+        }
+    }
+
+    /// Add asset to track slot. Returns nil on success, or an error string on dimension mismatch.
+    @discardableResult
+    func addAssetToTrack(displayType: String, slotIndex: Int, localPath: String) -> String? {
+        guard slotIndex >= 0 && slotIndex < 10 else { return "Invalid slot index" }
+
+        guard let image = NSImage(contentsOfFile: localPath) else {
+            return "Could not load image"
+        }
+
+        // Validate dimensions
+        var pixelWidth = 0, pixelHeight = 0
+        if let rep = image.representations.first, rep.pixelsWide > 0, rep.pixelsHigh > 0 {
+            pixelWidth = rep.pixelsWide
+            pixelHeight = rep.pixelsHigh
+        } else if let tiff = image.tiffRepresentation,
+                  let bitmap = NSBitmapImageRep(data: tiff) {
+            pixelWidth = bitmap.pixelsWide
+            pixelHeight = bitmap.pixelsHigh
+        }
+
+        if let error = Self.validateDimensions(width: pixelWidth, height: pixelHeight, displayType: displayType) {
+            return error
+        }
+
+        var slots = trackSlots[displayType] ?? Array(repeating: nil, count: 10)
+        let slot = TrackSlot(
+            id: UUID().uuidString,
+            localPath: localPath,
+            localImage: image,
+            ascScreenshot: nil,
+            isFromASC: false
+        )
+        // If target slot occupied, shift right
+        if slots[slotIndex] != nil {
+            slots.insert(slot, at: slotIndex)
+            slots = Array(slots.prefix(10))
+        } else {
+            slots[slotIndex] = slot
+        }
+        // Pad back to 10
+        while slots.count < 10 { slots.append(nil) }
+        trackSlots[displayType] = slots
+        return nil
+    }
+
+    func removeFromTrack(displayType: String, slotIndex: Int) {
+        guard slotIndex >= 0 && slotIndex < 10 else { return }
+        var slots = trackSlots[displayType] ?? Array(repeating: nil, count: 10)
+        slots.remove(at: slotIndex)
+        slots.append(nil) // maintain 10 elements
+        trackSlots[displayType] = slots
+    }
+
+    func reorderTrack(displayType: String, fromIndex: Int, toIndex: Int) {
+        guard fromIndex >= 0 && fromIndex < 10 && toIndex >= 0 && toIndex < 10 else { return }
+        guard fromIndex != toIndex else { return }
+        var slots = trackSlots[displayType] ?? Array(repeating: nil, count: 10)
+        let item = slots.remove(at: fromIndex)
+        slots.insert(item, at: toIndex)
+        trackSlots[displayType] = slots
     }
 
     func uploadScreenshots(paths: [String], displayType: String, locale: String) async {

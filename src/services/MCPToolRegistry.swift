@@ -141,6 +141,16 @@ enum MCPToolRegistry {
             required: []
         ))
 
+        // -- Rejection Feedback --
+        tools.append(tool(
+            name: "get_rejection_feedback",
+            description: "Get Apple's detailed rejection feedback (guideline violations, reviewer messages) for the current or specified app version. Returns cached data — no Apple ID auth required. Use this when an app is rejected to understand what needs to be fixed.",
+            properties: [
+                "version": ["type": "string", "description": "Version string to get feedback for (e.g. \"1.0.0\"). Defaults to the latest rejected version."]
+            ],
+            required: []
+        ))
+
         // -- Tab State --
         tools.append(tool(
             name: "get_tab_state",
@@ -179,7 +189,7 @@ enum MCPToolRegistry {
 
         tools.append(tool(
             name: "asc_upload_screenshots",
-            description: "Upload screenshot files to App Store Connect for the active version.",
+            description: "Upload screenshot files to App Store Connect for the active version. Legacy — prefer screenshots_save with track workflow.",
             properties: [
                 "screenshotPaths": [
                     "type": "array",
@@ -189,6 +199,38 @@ enum MCPToolRegistry {
                 "locale": ["type": "string", "description": "e.g. en-US"]
             ],
             required: ["screenshotPaths", "displayType"]
+        ))
+
+        // -- Screenshot Track Tools --
+        tools.append(tool(
+            name: "screenshots_add_asset",
+            description: "Copy a screenshot file into the project's local screenshots asset library.",
+            properties: [
+                "sourcePath": ["type": "string", "description": "Absolute path to the source image file"],
+                "fileName": ["type": "string", "description": "Optional file name for the copy (defaults to source file name)"]
+            ],
+            required: ["sourcePath"]
+        ))
+
+        tools.append(tool(
+            name: "screenshots_set_track",
+            description: "Place a local screenshot asset into a specific track slot (1-10) for upload staging.",
+            properties: [
+                "assetFileName": ["type": "string", "description": "File name of the asset in the local screenshots library"],
+                "slotIndex": ["type": "integer", "description": "Track slot position (1-10)"],
+                "displayType": ["type": "string", "description": "Display type (default APP_IPHONE_67)", "enum": ["APP_IPHONE_67", "APP_IPAD_PRO_3GEN_129", "APP_DESKTOP"]]
+            ],
+            required: ["assetFileName", "slotIndex"]
+        ))
+
+        tools.append(tool(
+            name: "screenshots_save",
+            description: "Save the current screenshot track to App Store Connect. Syncs all changes (additions, removals, reorder) for the specified device type.",
+            properties: [
+                "displayType": ["type": "string", "description": "Display type (default APP_IPHONE_67)", "enum": ["APP_IPHONE_67", "APP_IPAD_PRO_3GEN_129", "APP_DESKTOP"]],
+                "locale": ["type": "string", "description": "Locale code (default en-US)"]
+            ],
+            required: []
         ))
 
         tools.append(tool(
@@ -287,7 +329,7 @@ enum MCPToolRegistry {
             return .query
         case "settings_get":
             return .query
-        case "get_blitz_screenshot", "get_tab_state":
+        case "get_blitz_screenshot", "get_tab_state", "get_rejection_feedback":
             return .query
 
         // Mutations
@@ -301,7 +343,7 @@ enum MCPToolRegistry {
         // ASC mutation tools
         case "asc_fill_form":
             return .ascFormMutation
-        case "asc_upload_screenshots":
+        case "asc_upload_screenshots", "screenshots_add_asset", "screenshots_set_track", "screenshots_save":
             return .ascScreenshotMutation
         case "asc_open_submit_preview":
             return .ascSubmitMutation

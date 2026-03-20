@@ -60,6 +60,14 @@ for bundle_dir in .build/${CONFIG}/*.bundle; do
     fi
 done
 
+# Embed Claude skills in .app bundle (installed to ~/.claude/skills/ at app startup)
+SKILLS_SRC="$ROOT_DIR/.claude/skills"
+SKILLS_DST="$BUNDLE_DIR/Contents/Resources/claude-skills"
+if [ -d "$SKILLS_SRC" ]; then
+    cp -R "$SKILLS_SRC" "$SKILLS_DST"
+    echo "Embedded Claude skills in .app bundle"
+fi
+
 # Embed pkg-scripts in .app for auto-updater (mirrors Tauri pattern)
 PKG_SCRIPTS_SRC="$ROOT_DIR/scripts/pkg-scripts"
 PKG_SCRIPTS_DST="$BUNDLE_DIR/Contents/Resources/pkg-scripts"
@@ -121,7 +129,7 @@ if [ "$SIGNING_IDENTITY" != "-" ]; then
             --sign "$SIGNING_IDENTITY" \
             --entitlements "$ENTITLEMENTS" \
             "$f" 2>/dev/null; then
-            codesign --force --options runtime \
+            codesign --force --options runtime --timestamp=none \
                 --sign "$SIGNING_IDENTITY" \
                 --entitlements "$ENTITLEMENTS" \
                 "$f" 2>/dev/null || true
@@ -140,7 +148,7 @@ else
         --entitlements "$ENTITLEMENTS" \
         "$BUNDLE_DIR" &>/dev/null; then
         echo "Timestamp server unavailable, signing without timestamp..."
-        codesign --force --options runtime \
+        codesign --force --options runtime --timestamp=none \
             --sign "$SIGNING_IDENTITY" \
             --entitlements "$ENTITLEMENTS" \
             "$BUNDLE_DIR"
