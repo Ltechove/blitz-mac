@@ -489,6 +489,7 @@ struct ASCProfile: Decodable, Identifiable {
 
 struct IrisSession: Codable {
     var cookies: [IrisCookie]
+    var email: String?
     var capturedAt: Date
 
     struct IrisCookie: Codable {

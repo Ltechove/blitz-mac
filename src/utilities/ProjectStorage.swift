@@ -241,6 +241,12 @@ struct ProjectStorage {
 
         // 4. App Store Review Agent — clone from public repo, symlink into .claude/agents/
         ensureReviewerAgent(projectDir: projectDir)
+
+        // 5. ASC CLI skills — clone from public repo, copy into .claude/skills/
+        ensureASCSkills(projectDir: projectDir)
+
+        // 6. ASC CLI — headless install if not already present
+        ensureASCCLI()
     }
 
     /// Clone or update the app-store-review-agent repo and symlink the agent
@@ -293,6 +299,149 @@ struct ProjectStorage {
                     withDestinationPath: "../app-store-review-agent/agents/reviewer.md"
                 )
                 print("[ProjectStorage] Reviewer agent installed")
+            }
+        }
+    }
+
+    /// Clone or update the ASC CLI skills repo and copy skill directories
+    /// into .claude/skills/ where Claude Code can discover them.
+    /// Overwrites asc-app-create-ui/SKILL.md with the pre-cached-session version.
+    /// Runs git operations on a background queue so it never blocks the UI.
+    func ensureASCSkills(projectDir: URL) {
+        let fm = FileManager.default
+        let claudeDir = projectDir.appendingPathComponent(".claude")
+        let repoDir = claudeDir.appendingPathComponent("asc-skills")
+        let skillsDir = claudeDir.appendingPathComponent("skills")
+
+        DispatchQueue.global(qos: .utility).async {
+            let repoURL = BlitzPaths.ascSkillsRepo
+
+            if fm.fileExists(atPath: repoDir.appendingPathComponent(".git").path) {
+                // Already cloned — pull latest
+                let pull = Process()
+                pull.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                pull.arguments = ["-C", repoDir.path, "pull", "--quiet", "--ff-only"]
+                pull.standardOutput = FileHandle.nullDevice
+                pull.standardError = FileHandle.nullDevice
+                try? pull.run()
+                pull.waitUntilExit()
+            } else {
+                // First time — clone
+                let clone = Process()
+                clone.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+                clone.arguments = ["clone", "--quiet", "--depth", "1", repoURL, repoDir.path]
+                clone.standardOutput = FileHandle.nullDevice
+                clone.standardError = FileHandle.nullDevice
+                try? clone.run()
+                clone.waitUntilExit()
+                guard clone.terminationStatus == 0 else {
+                    print("[ProjectStorage] Failed to clone asc-skills")
+                    return
+                }
+            }
+
+            // Copy each skill directory from the cloned repo into .claude/skills/
+            let repoSkillsDir = repoDir.appendingPathComponent("skills")
+            guard let skillDirs = try? fm.contentsOfDirectory(
+                at: repoSkillsDir,
+                includingPropertiesForKeys: [.isDirectoryKey]
+            ) else { return }
+
+            try? fm.createDirectory(at: skillsDir, withIntermediateDirectories: true)
+
+            for srcSkillDir in skillDirs {
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: srcSkillDir.path, isDirectory: &isDir),
+                      isDir.boolValue else { continue }
+
+                let destSkillDir = skillsDir.appendingPathComponent(srcSkillDir.lastPathComponent)
+
+                if fm.fileExists(atPath: destSkillDir.path) {
+                    // Update: remove and re-copy to pick up changes
+                    try? fm.removeItem(at: destSkillDir)
+                }
+                try? fm.copyItem(at: srcSkillDir, to: destSkillDir)
+            }
+
+            // Overwrite asc-app-create-ui/SKILL.md with Blitz's pre-cached-session version
+            let ascCreateSkillFile = skillsDir
+                .appendingPathComponent("asc-app-create-ui")
+                .appendingPathComponent("SKILL.md")
+            try? Self.ascAppCreateSkillContent()
+                .write(to: ascCreateSkillFile, atomically: true, encoding: .utf8)
+
+            print("[ProjectStorage] ASC skills installed")
+        }
+    }
+
+    /// Content for the Blitz-specific asc-app-create-ui skill that uses
+    /// pre-cached Apple ID session instead of requiring browser automation.
+    private static func ascAppCreateSkillContent() -> String {
+        return """
+        ---
+        name: asc-app-create-ui
+        description: Create an App Store Connect app using pre-cached Apple ID session from Blitz
+        ---
+
+        Create an App Store Connect app using the `asc` CLI. The user's Apple ID session has already been captured by Blitz and bridged into the ASC CLI keychain, so **no password or 2FA is needed**.
+
+        Extract from the conversation context:
+        - `bundleId` — the bundle identifier (e.g. `com.blitz.myapp`)
+        - `sku` — the SKU string
+        - `appleId` — the Apple ID email (may be provided; if missing, ask the user)
+
+        ## Steps
+
+        1. **Ask the user** what primary language the app should use. Common choices: `en-US` (English US), `en-GB` (English UK), `ja` (Japanese), `zh-Hans` (Simplified Chinese), `ko` (Korean), `fr-FR` (French), `de-DE` (German).
+
+        2. **Derive the app name** from the bundle ID: take the last component after the final `.`, capitalize the first letter.
+
+        3. **Run the create command** — auth is pre-cached, no prompts expected:
+
+        ```bash
+        asc apps create \\
+          --apple-id "<appleId>" \\
+          --bundle-id "<bundleId>" \\
+          --sku "<sku>" \\
+          --primary-locale "<locale>" \\
+          --name "<appName>"
+        ```
+
+        4. Report the App ID and store URL back to the user on success.
+
+        5. If the command fails with an auth error, tell the user to re-authenticate through Blitz (Release > Overview > "Automatically create using Claude Code") and try again.
+        """
+    }
+
+    /// Install the `asc` CLI if not already present on the system.
+    /// Checks common install locations first; if missing, runs the headless installer.
+    /// Runs on a background queue so it never blocks the UI.
+    func ensureASCCLI() {
+        DispatchQueue.global(qos: .utility).async {
+            let fm = FileManager.default
+            let searchPaths = [
+                "/opt/homebrew/bin/asc",
+                "/usr/local/bin/asc",
+                NSHomeDirectory() + "/.local/bin/asc",
+            ]
+
+            for path in searchPaths {
+                if fm.isExecutableFile(atPath: path) { return }
+            }
+
+            // Not found — install headlessly
+            let install = Process()
+            install.executableURL = URL(fileURLWithPath: "/bin/bash")
+            install.arguments = ["-c", "curl -fsSL https://asccli.sh/install | bash"]
+            install.standardOutput = FileHandle.nullDevice
+            install.standardError = FileHandle.nullDevice
+            try? install.run()
+            install.waitUntilExit()
+
+            if install.terminationStatus == 0 {
+                print("[ProjectStorage] ASC CLI installed")
+            } else {
+                print("[ProjectStorage] Failed to install ASC CLI")
             }
         }
     }

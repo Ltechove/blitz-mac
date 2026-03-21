@@ -1,4 +1,5 @@
 import SwiftUI
+import CryptoKit
 
 /// Multi-phase inline view for registering a bundle ID, enabling capabilities,
 /// and guiding the user to create their app in App Store Connect.
@@ -23,6 +24,9 @@ struct BundleIDSetupView: View {
     @State private var createdBundleId = ""
     @State private var capabilitiesEnabled = 0
     @State private var showAdditional = false
+
+    // Auto-create via Claude Code
+    @State private var showAppleIDLogin = false
 
     // Capabilities supported by the ASC API (can be enabled automatically)
     private static let capabilities: [(type: String, name: String)] = [
@@ -123,6 +127,13 @@ struct BundleIDSetupView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear(perform: prefill)
+        .sheet(isPresented: $showAppleIDLogin) {
+            AppleIDLoginSheet(
+                subtitle: "Sign in to let Claude register your app in App Store Connect."
+            ) { session in
+                handleAutoCreateSession(session)
+            }
+        }
     }
 
     // MARK: - Phase 1: Form
@@ -316,6 +327,18 @@ struct BundleIDSetupView: View {
                 .background(.background.secondary)
                 .clipShape(RoundedRectangle(cornerRadius: 6))
 
+            Button {
+                showAppleIDLogin = true
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "sparkles")
+                    Text("Automatically create using Claude Code")
+                }
+                .font(.callout)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.blue)
+
             Link("Open App Store Connect \u{2192}",
                  destination: URL(string: "https://appstoreconnect.apple.com/apps")!)
                 .font(.callout)
@@ -457,6 +480,145 @@ struct BundleIDSetupView: View {
                 phase = .manual
             }
         }
+    }
+
+    // MARK: - Auto-create via Claude Code
+
+    private func handleAutoCreateSession(_ session: IrisSession) {
+        try? session.save()
+
+        Task {
+            // Email is extracted in the WebView via sync XHR. If that failed
+            // (e.g. page navigated away before XHR completed), fall back to
+            // a direct URLSession request with an ephemeral config.
+            var email = session.email
+            if email == nil {
+                email = await fetchAppleIDEmailFallback(session: session)
+            }
+
+            // Bridge cookies into the ASC CLI keychain so `asc apps create` just works
+            bridgeToASCKeychain(session: session, email: email)
+
+            // Launch Terminal running Claude Code
+            launchClaudeCodeForAppCreate(bundleId: createdBundleId, email: email)
+        }
+    }
+
+    /// Fallback email extraction using an ephemeral URLSession (no shared cookie
+    /// store interference). Used when the WebView sync XHR didn't capture the email.
+    private func fetchAppleIDEmailFallback(session: IrisSession) async -> String? {
+        guard let url = URL(string: "https://appstoreconnect.apple.com/olympus/v1/session") else { return nil }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 10
+        request.setValue(
+            session.cookies.map { "\($0.name)=\($0.value)" }.joined(separator: "; "),
+            forHTTPHeaderField: "Cookie"
+        )
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+
+        let config = URLSessionConfiguration.ephemeral
+        config.httpShouldSetCookies = false
+        let urlSession = URLSession(configuration: config)
+
+        guard let (data, _) = try? await urlSession.data(for: request),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let user = json["user"] as? [String: Any],
+              let email = user["emailAddress"] as? String else {
+            return nil
+        }
+        return email
+    }
+
+    private func bridgeToASCKeychain(session: IrisSession, email: String?) {
+        // Build the persisted-session JSON that the ASC CLI expects
+        var cookiesByDomain: [String: [[String: Any]]] = [:]
+        for cookie in session.cookies {
+            let domainKey = cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain
+            let cookieDict: [String: Any] = [
+                "name": cookie.name,
+                "value": cookie.value,
+                "domain": cookie.domain,
+                "path": cookie.path,
+                "secure": true,
+                "http_only": true,
+            ]
+            cookiesByDomain[domainKey, default: []].append(cookieDict)
+        }
+
+        let persistedSession: [String: Any] = [
+            "version": 1,
+            "updated_at": ISO8601DateFormatter().string(from: Date()),
+            "cookies": cookiesByDomain,
+        ]
+
+        guard let sessionData = try? JSONSerialization.data(withJSONObject: persistedSession) else { return }
+
+        // If we resolved the email, store under the sha256 key ASC looks up by email
+        if let email {
+            let normalized = email.lowercased().trimmingCharacters(in: .whitespaces)
+            let hashString = SHA256.hash(data: Data(normalized.utf8))
+                .map { String(format: "%02x", $0) }.joined()
+
+            writeASCKeychainEntry(service: "asc-web-session",
+                                  account: "asc:web-session:\(hashString)",
+                                  data: sessionData)
+            writeASCKeychainEntry(service: "asc-web-session",
+                                  account: "asc:web-session:last",
+                                  data: Data(hashString.utf8))
+        }
+
+        // Always also store under a well-known key so the skill can look it up
+        writeASCKeychainEntry(service: "asc-web-session",
+                              account: "asc:web-session:blitz",
+                              data: sessionData)
+    }
+
+    private func writeASCKeychainEntry(service: String, account: String, data: Data) {
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
+        let addQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
+        ]
+        SecItemAdd(addQuery as CFDictionary, nil)
+    }
+
+    private func launchClaudeCodeForAppCreate(bundleId: String, email: String?) {
+        let appSuffix = bundleId.split(separator: ".").last.map(String.init) ?? bundleId
+        let sku = appSuffix.uppercased() + String(format: "%04d", Int.random(in: 1000...9999))
+        var prompt = "Create a new App Store Connect app for \(bundleId) with SKU \(sku)"
+        if let email {
+            prompt += " and apple-id \(email)"
+        }
+        prompt += ". Ask the user what primary language they want (e.g. en-US for English), then use the /asc-app-create-ui skill."
+
+        // Resolve the project directory so Claude discovers .claude/skills/
+        var cdCommand = ""
+        if let projectId = asc.loadedProjectId {
+            let projectDir = ProjectStorage().baseDirectory.appendingPathComponent(projectId)
+            let escaped = projectDir.path.replacingOccurrences(of: "'", with: "'\\''")
+            cdCommand = "cd '\(escaped)' && "
+        }
+
+        // Use osascript via Process — more reliable than NSAppleScript in sandboxed apps
+        let script = """
+        tell application "Terminal"
+            do script "\(cdCommand)claude '\(prompt)'"
+            activate
+        end tell
+        """
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        process.arguments = ["-e", script]
+        try? process.run()
     }
 
     // MARK: - Helpers

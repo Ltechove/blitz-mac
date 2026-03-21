@@ -23,6 +23,7 @@ private func irisLog(_ msg: String) {
 }
 
 struct AppleIDLoginSheet: View {
+    var subtitle: String = "Sign in to App Store Connect to view Apple's review feedback."
     var onSessionCaptured: (IrisSession) -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var isLoading = true
@@ -33,7 +34,7 @@ struct AppleIDLoginSheet: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Sign in with Apple ID")
                         .font(.headline)
-                    Text("Sign in to App Store Connect to view Apple's review feedback.")
+                    Text(subtitle)
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 }
@@ -193,15 +194,41 @@ struct ASCWebView: NSViewRepresentable {
                     )
                 }
 
-                let session = IrisSession(
-                    cookies: irisCookies,
-                    capturedAt: Date()
-                )
-
-                irisLog("extractCookies: created IrisSession with \(irisCookies.count) cookies, calling onSessionCaptured")
+                // Fetch Apple ID email via synchronous XHR inside the WebView.
+                // We use sync XHR (not fetch) because WKWebView's evaluateJavaScript
+                // does NOT await Promises — fetch().then() returns a Promise object
+                // which serializes as nil. Sync XHR returns the value immediately.
+                let js = """
+                (function() {
+                    try {
+                        var xhr = new XMLHttpRequest();
+                        xhr.open('GET', 'https://appstoreconnect.apple.com/olympus/v1/session', false);
+                        xhr.setRequestHeader('Accept', 'application/json');
+                        xhr.send();
+                        if (xhr.status === 200) {
+                            var j = JSON.parse(xhr.responseText);
+                            return (j.user && j.user.emailAddress) || null;
+                        }
+                        return null;
+                    } catch(e) { return null; }
+                })()
+                """
 
                 DispatchQueue.main.async {
-                    self?.parent.onSessionCaptured(session)
+                    webView.evaluateJavaScript(js) { result, error in
+                        let email = result as? String
+                        irisLog("extractCookies: fetched email=\(email ?? "nil") error=\(error?.localizedDescription ?? "none")")
+
+                        let session = IrisSession(
+                            cookies: irisCookies,
+                            email: email,
+                            capturedAt: Date()
+                        )
+
+                        irisLog("extractCookies: created IrisSession with \(irisCookies.count) cookies, email=\(email ?? "nil"), calling onSessionCaptured")
+
+                        self?.parent.onSessionCaptured(session)
+                    }
                 }
             }
         }

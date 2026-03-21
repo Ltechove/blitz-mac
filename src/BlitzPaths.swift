@@ -53,4 +53,7 @@ enum BlitzPaths {
 
     /// App Store Review Agent repo URL
     static let reviewerAgentRepo = "https://github.com/blitzdotdev/app-store-review-agent.git"
+
+    /// App Store Connect CLI Skills repo URL
+    static let ascSkillsRepo = "https://github.com/rudrankriyam/app-store-connect-cli-skills.git"
 }
