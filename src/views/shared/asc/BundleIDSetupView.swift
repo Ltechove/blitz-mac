@@ -600,6 +600,9 @@ struct BundleIDSetupView: View {
         }
         prompt += ". Ask the user what primary language they want (e.g. en-US for English), then use the /asc-app-create-ui skill."
 
+        // Escape for shell single-quote context: replace ' with '\''
+        let escapedPrompt = prompt.replacingOccurrences(of: "'", with: "'\\''")
+
         // Resolve the project directory so Claude discovers .claude/skills/
         var cdCommand = ""
         if let projectId = asc.loadedProjectId {
@@ -608,10 +611,16 @@ struct BundleIDSetupView: View {
             cdCommand = "cd '\(escaped)' && "
         }
 
+        // Escape for AppleScript double-quote context: escape \ and "
+        let asBody = "\(cdCommand)claude '\(escapedPrompt)'"
+        let escapedAS = asBody
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+
         // Use osascript via Process — more reliable than NSAppleScript in sandboxed apps
         let script = """
         tell application "Terminal"
-            do script "\(cdCommand)claude '\(prompt)'"
+            do script "\(escapedAS)"
             activate
         end tell
         """

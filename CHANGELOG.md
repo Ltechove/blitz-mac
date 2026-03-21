@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.26
+- ASC CLI skills: auto-provision 21 App Store Connect skills into each project's .claude/skills/
+- Auto-install asc CLI if not present on the system
+- Fix Apple ID email not captured during auto-create flow (sync XHR + ephemeral URLSession fallback)
+- Auto-create via Claude Code now cd's into project dir so skills are discovered
+- Fix shell injection in Terminal launch for auto-create flow
+
 ## 1.0.25
 - Add App Store rejection feedback 
 - Screenshot track-based workflow: arrange, reorder, and sync screenshots to ASC
