@@ -30,6 +30,7 @@ final class SettingsService {
 
     init() {
         self.settingsURL = BlitzPaths.settings
+        load()
     }
 
     func load() {

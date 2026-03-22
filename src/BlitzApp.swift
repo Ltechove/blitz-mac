@@ -197,7 +197,6 @@ struct BlitzApp: App {
             WelcomeWindow(appState: appState)
                 .frame(width: 700, height: 440)
                 .onAppear {
-                    appState.settingsStore.load()
                     appDelegate.appState = appState
                 }
         }
