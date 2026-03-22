@@ -61,7 +61,7 @@ except subprocess.CalledProcessError:
 store = json.loads(raw)
 session = store['sessions'][store['last_key']]
 cookie_str = '; '.join(
-    (f'{c[\"name\"]}=\"{c[\"value\"]}\"' if c['name'].startswith('DES') else f'{c[\"name\"]}={c[\"value\"]}')
+    f'{c[\"name\"]}={c[\"value\"]}'
     for cl in session['cookies'].values() for c in cl
     if c.get('name') and c.get('value')
 )
@@ -97,7 +97,7 @@ try:
 except urllib.error.HTTPError as e:
     body = e.read().decode()
     if e.code == 401:
-        print('ERROR: Session expired. User must run: asc web auth login --apple-id EMAIL')
+        print('ERROR: Session expired. Call asc_web_auth MCP tool to re-authenticate.')
     elif e.code == 409:
         print(f'ERROR: A key with this name may already exist. Details: {body[:300]}')
     else:
