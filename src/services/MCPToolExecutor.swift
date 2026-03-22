@@ -942,6 +942,14 @@ actor MCPToolExecutor {
         }
 
         guard let session = await appState.ascManager.requestWebAuthForMCP() else {
+            let authError = await MainActor.run { appState.ascManager.irisFeedbackError }
+            if let authError, !authError.isEmpty {
+                return mcpJSON([
+                    "success": false,
+                    "cancelled": false,
+                    "message": authError
+                ])
+            }
             return mcpJSON([
                 "success": false,
                 "cancelled": true,

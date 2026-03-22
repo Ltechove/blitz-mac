@@ -502,15 +502,9 @@ struct BundleIDSetupView: View {
     private func confirmAppCreated() {
         error = nil
         let expectedBundleId = createdBundleId.trimmingCharacters(in: .whitespacesAndNewlines)
-        let expectedAppName = createdAppName.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !expectedBundleId.isEmpty else {
             error = "The registered bundle ID is missing. Register the bundle ID again before confirming."
-            phase = .manual
-            return
-        }
-        guard !expectedAppName.isEmpty else {
-            error = "The expected app name is missing. Register the bundle ID again before confirming."
             phase = .manual
             return
         }
@@ -518,14 +512,14 @@ struct BundleIDSetupView: View {
         phase = .confirming
 
         Task {
-            let found = await asc.fetchApp(bundleId: expectedBundleId, exactName: expectedAppName)
+            let found = await asc.fetchApp(bundleId: expectedBundleId)
 
             if found {
                 asc.credentialsError = nil
                 asc.resetTabState()
                 await asc.fetchTabData(tab)
             } else {
-                error = "App not found in App Store Connect. Create the app with the exact name \"\(expectedAppName)\" and bundle ID \"\(expectedBundleId)\", then try again."
+                error = "App not found in App Store Connect. Make sure you created the app with bundle ID \"\(expectedBundleId)\", then try again."
                 phase = .manual
             }
         }

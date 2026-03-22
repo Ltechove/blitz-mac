@@ -417,6 +417,7 @@ final class ASCManager {
 
     func requestWebAuthForMCP() async -> IrisSession? {
         pendingWebAuthContinuation?.resume(returning: nil)
+        irisFeedbackError = nil
         showAppleIDLogin = true
         return await withCheckedContinuation { continuation in
             pendingWebAuthContinuation = continuation
@@ -443,8 +444,19 @@ final class ASCManager {
             return
         }
 
-        // Also write the asc-web-session keychain item used by CLI skill scripts
-        Self.storeWebSessionToKeychain(session)
+        // Also write the asc-web-session keychain item used by CLI skill scripts.
+        // If that write fails during an MCP-triggered login, keep the native session
+        // but fail the MCP request instead of reporting a false success.
+        do {
+            try Self.storeWebSessionToKeychain(session)
+        } catch {
+            irisLog("ASCManager.setIrisSession: asc-web-session save FAILED: \(error)")
+            irisFeedbackError = "Failed to save ASC web session: \(error.localizedDescription)"
+            if let continuation = pendingWebAuthContinuation {
+                pendingWebAuthContinuation = nil
+                continuation.resume(returning: nil)
+            }
+        }
 
         irisSession = session
         irisService = IrisService(session: session)
@@ -481,7 +493,7 @@ final class ASCManager {
 
     /// Write session cookies in the format expected by CLI skill scripts
     /// (readable via `security find-generic-password -s "asc-web-session" -w`).
-    private static func storeWebSessionToKeychain(_ session: IrisSession) {
+    private static func storeWebSessionToKeychain(_ session: IrisSession) throws {
         var cookiesByDomain: [String: [[String: Any]]] = [:]
         for cookie in session.cookies {
             let domainKey = cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain
@@ -513,9 +525,7 @@ final class ASCManager {
             "sessions": [hashString: sessionEntry],
         ]
 
-        guard let data = try? JSONSerialization.data(withJSONObject: store) else {
-            return
-        }
+        let data = try JSONSerialization.data(withJSONObject: store)
 
         deleteWebSessionFromKeychain()
 
@@ -527,7 +537,14 @@ final class ASCManager {
             kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlocked,
         ]
-        SecItemAdd(addQuery as CFDictionary, nil)
+        let status = SecItemAdd(addQuery as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw NSError(
+                domain: "ASCWebSessionStore",
+                code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: "Keychain write failed (status: \(status))"]
+            )
+        }
     }
 
     private static func deleteWebSessionFromKeychain() {

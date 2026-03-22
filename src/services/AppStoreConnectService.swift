@@ -603,8 +603,8 @@ final class AppStoreConnectService {
             all.append(contentsOf: resp.data)
             guard let next = resp.links?.next,
                   let comps = URLComponents(string: next),
-                  let nextPath = comps.path.split(separator: "/v1/").last else { break }
-            path = String(nextPath)
+                  !comps.path.isEmpty else { break }
+            path = comps.path
             queryItems = comps.queryItems ?? []
         }
         return all
