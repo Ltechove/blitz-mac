@@ -180,12 +180,12 @@ final class ASCManager {
 
         if isMacApp {
             let macCount = macScreenshots.map { screenshots[$0.id]?.count ?? $0.attributes.screenshotCount ?? 0 } ?? 0
-            fields.append(.init(label: "Mac Screenshots", value: macScreenshots != nil ? "\(macCount) screenshot(s)" : nil))
+            fields.append(.init(label: "Mac Screenshots", value: macCount > 0 ? "\(macCount) screenshot(s)" : nil))
         } else {
             let iphoneCount = iphoneScreenshots.map { screenshots[$0.id]?.count ?? $0.attributes.screenshotCount ?? 0 } ?? 0
             let ipadCount = ipadScreenshots.map { screenshots[$0.id]?.count ?? $0.attributes.screenshotCount ?? 0 } ?? 0
-            fields.append(.init(label: "iPhone Screenshots", value: iphoneScreenshots != nil ? "\(iphoneCount) screenshot(s)" : nil))
-            fields.append(.init(label: "iPad Screenshots", value: ipadScreenshots != nil ? "\(ipadCount) screenshot(s)" : nil))
+            fields.append(.init(label: "iPhone Screenshots", value: iphoneCount > 0 ? "\(iphoneCount) screenshot(s)" : nil))
+            fields.append(.init(label: "iPad Screenshots", value: ipadCount > 0 ? "\(ipadCount) screenshot(s)" : nil))
         }
 
         fields.append(contentsOf: [
