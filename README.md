@@ -94,6 +94,10 @@ All release binaries are built by the public [GitHub Actions workflow](.github/w
 
 Single-target SwiftUI app built with Swift Package Manager. All source lives in `src/`. See [CLAUDE.md](CLAUDE.md) for detailed architecture documentation.
 
+## Contributor TODO
+
+- Improve auto-update performance and UX. The current `.app.zip` update path runs embedded `preinstall`/`postinstall` scripts during in-app updates, which can re-run heavyweight setup like Ruby, CocoaPods, Python, `idb`, and simulator checks. The preferred fix is a fast app-replacement path for normal updates, with toolchain repair/checks moved to first launch or background maintenance, plus real progress reporting during download/install.
+
 ## License
 
 [Apache License 2.0](LICENSE)
