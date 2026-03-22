@@ -397,16 +397,14 @@ struct ScreenshotsView: View {
                     // Slot has content
                     Group {
                         if hasError {
-                            // Error state: red-outlined phone frame with error icon
+                            // Error state: portrait phone frame with red outline and error icon
                             RoundedRectangle(cornerRadius: 6)
                                 .fill(Color(.controlBackgroundColor))
+                                .aspectRatio(9.0/19.5, contentMode: .fit)
                                 .overlay(
-                                    VStack(spacing: 6) {
+                                    VStack(spacing: 4) {
                                         Image(systemName: "exclamationmark.circle.fill")
-                                            .font(.title2)
-                                            .foregroundStyle(.red)
-                                        Text("Error")
-                                            .font(.caption2)
+                                            .font(.callout)
                                             .foregroundStyle(.red)
                                     }
                                 )
