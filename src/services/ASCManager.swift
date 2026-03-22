@@ -1478,40 +1478,6 @@ final class ASCManager {
         trackSlots[displayType] = slots
     }
 
-    func uploadScreenshots(paths: [String], displayType: String, locale: String) async {
-        guard let service else { writeError = "ASC service not configured"; return }
-        // Ensure localizations are loaded (may be empty if tab hasn't been visited)
-        if localizations.isEmpty, let versionId = appStoreVersions.first?.id {
-            localizations = (try? await service.fetchLocalizations(versionId: versionId)) ?? []
-        }
-        // If still no versions loaded, try fetching those too
-        if localizations.isEmpty, let appId = app?.id {
-            let versions = (try? await service.fetchAppStoreVersions(appId: appId)) ?? []
-            appStoreVersions = versions
-            if let versionId = versions.first?.id {
-                localizations = (try? await service.fetchLocalizations(versionId: versionId)) ?? []
-            }
-        }
-        guard let loc = localizations.first(where: { $0.attributes.locale == locale })
-                ?? localizations.first else {
-            writeError = "No localizations found for locale '\(locale)'. Check that a version exists."
-            return
-        }
-        writeError = nil
-        do {
-            for path in paths {
-                try await service.uploadScreenshot(localizationId: loc.id, path: path, displayType: displayType)
-            }
-            let sets = try await service.fetchScreenshotSets(localizationId: loc.id)
-            screenshotSets = sets
-            for set in sets {
-                screenshots[set.id] = try await service.fetchScreenshots(setId: set.id)
-            }
-        } catch {
-            writeError = error.localizedDescription
-        }
-    }
-
     /// The pending version ID (not live / not removed).
     var pendingVersionId: String? {
         appStoreVersions.first {
