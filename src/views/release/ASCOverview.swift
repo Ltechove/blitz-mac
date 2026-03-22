@@ -6,7 +6,6 @@ struct ASCOverview: View {
     private var asc: ASCManager { appState.ascManager }
     @State private var showPreview = false
     @State private var appIcon: NSImage?
-    @State private var showAppleIDLogin = false
 
     var body: some View {
         ASCCredentialGate(
@@ -34,24 +33,20 @@ struct ASCOverview: View {
                 asc.showSubmitPreview = false
             }
         }
-        .sheet(isPresented: $showAppleIDLogin) {
-            AppleIDLoginSheet { session in
-                asc.setIrisSession(session)
-                Task { await asc.fetchRejectionFeedback() }
-            }
-        }
-        .onChange(of: asc.showAppleIDLogin) { _, newValue in
-            if newValue {
-                showAppleIDLogin = true
-                asc.showAppleIDLogin = false
-            }
-        }
         .onChange(of: asc.appStoreVersions.map(\.id)) { _, _ in
             guard let appId = asc.app?.id else { return }
+
+            // Look for a currently-rejected version first, then fall back to the pending version
+            // (which may have been rejected previously and now has a new build uploaded)
             let rejectedVersion = asc.appStoreVersions.first(where: {
                 $0.attributes.appStoreState == "REJECTED"
             })
-            guard let version = rejectedVersion else { return }
+            let pendingVersion = asc.appStoreVersions.first(where: {
+                let s = $0.attributes.appStoreState ?? ""
+                return s != "READY_FOR_SALE" && s != "REMOVED_FROM_SALE"
+                    && s != "DEVELOPER_REMOVED_FROM_SALE" && !s.isEmpty
+            })
+            guard let version = rejectedVersion ?? pendingVersion else { return }
 
             // Always try cache first — instant, no auth needed
             asc.loadCachedFeedback(appId: appId, versionString: version.attributes.versionString)
@@ -129,9 +124,14 @@ struct ASCOverview: View {
                     )
                 }
 
-                // Rejection detail — shown when the pending version was rejected
+                // Rejection detail — shown when there's rejection data (persists until a new version is approved)
                 if let pending, pending.attributes.appStoreState == "REJECTED" {
                     rejectionCard(version: pending)
+                } else if asc.cachedFeedback != nil || !asc.rejectionReasons.isEmpty {
+                    // Show cached rejection feedback even after a new build is uploaded
+                    if let pending {
+                        rejectionCard(version: pending)
+                    }
                 }
 
                 // Preview / Submit section
@@ -566,7 +566,7 @@ struct ASCOverview: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Sign In") { showAppleIDLogin = true }
+                Button("Sign In") { asc.showAppleIDLogin = true }
                     .buttonStyle(.bordered)
             }
             .padding(10)
@@ -581,7 +581,7 @@ struct ASCOverview: View {
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Spacer()
-                Button("Sign In Again") { showAppleIDLogin = true }
+                Button("Sign In Again") { asc.showAppleIDLogin = true }
                     .buttonStyle(.bordered)
             }
             .padding(10)

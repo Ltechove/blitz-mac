@@ -657,13 +657,10 @@ final class ASCManager {
                 appInfoLocalization = try? await service.fetchAppInfoLocalization(appInfoId: infoId)
             }
             builds = try await service.fetchBuilds(appId: appId)
-            // Fetch review submission history (for rejection details)
-            let rejectedState = versions.first?.attributes.appStoreState
-            if rejectedState == "REJECTED" || rejectedState == "DEVELOPER_REJECTED" {
-                reviewSubmissions = (try? await service.fetchReviewSubmissions(appId: appId)) ?? []
-                if let latest = reviewSubmissions.first {
-                    latestSubmissionItems = (try? await service.fetchReviewSubmissionItems(submissionId: latest.id)) ?? []
-                }
+            // Fetch review submission history (rejection details persist until a new version is approved)
+            reviewSubmissions = (try? await service.fetchReviewSubmissions(appId: appId)) ?? []
+            if let latest = reviewSubmissions.first {
+                latestSubmissionItems = (try? await service.fetchReviewSubmissionItems(submissionId: latest.id)) ?? []
             }
 
             // Check monetization status — skip if already set (avoids race with in-flight fetches overwriting optimistic updates from setPriceFree/setAppPrice)
