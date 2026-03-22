@@ -139,6 +139,7 @@ struct ProjectStorage {
     /// Ensure .mcp.json contains blitz-macos and blitz-iphone MCP server entries.
     /// If the file exists, merges into the existing mcpServers key without overwriting other entries.
     /// If it doesn't exist, creates it.
+    /// Also removes the deprecated blitz-ios entry if present.
     func ensureMCPConfig(projectId: String) {
         let projectDir = baseDirectory.appendingPathComponent(projectId)
         let mcpFile = projectDir.appendingPathComponent(".mcp.json")
@@ -167,6 +168,7 @@ struct ProjectStorage {
             var servers = root["mcpServers"] as? [String: Any] ?? [:]
             servers["blitz-macos"] = blitzMacosEntry
             servers["blitz-iphone"] = blitzIphoneEntry
+            servers.removeValue(forKey: "blitz-ios") // deprecated
             root["mcpServers"] = servers
         } else {
             root = ["mcpServers": [
@@ -180,6 +182,23 @@ struct ProjectStorage {
             try data.write(to: mcpFile)
         } catch {
             print("[ProjectStorage] Failed to write .mcp.json: \(error)")
+        }
+
+        // Codex config — only blitz_macos (Codex reads .mcp.json for blitz-iphone).
+        // Uses underscores to avoid Codex hyphenated-name bug.
+        let codexDir = projectDir.appendingPathComponent(".codex")
+        let codexConfig = codexDir.appendingPathComponent("config.toml")
+        let toml = """
+        [mcp_servers.blitz_macos]
+        command = "bash"
+        args = ["\(bridgePath)"]
+        cwd = "\(projectDir.path)"
+        """
+        do {
+            try FileManager.default.createDirectory(at: codexDir, withIntermediateDirectories: true)
+            try toml.write(to: codexConfig, atomically: true, encoding: .utf8)
+        } catch {
+            print("[ProjectStorage] Failed to write .codex/config.toml: \(error)")
         }
     }
 
@@ -200,6 +219,13 @@ struct ProjectStorage {
            var existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             // Preserve user customisations; only force-update the server list
             existing["enabledMcpjsonServers"] = correctServers
+            // Remove deprecated blitz-ios permission entries
+            if var perms = existing["permissions"] as? [String: Any],
+               var allow = perms["allow"] as? [String] {
+                allow.removeAll { $0.contains("blitz-ios") }
+                perms["allow"] = allow
+                existing["permissions"] = perms
+            }
             settings = existing
         } else {
             settings = [
