@@ -28,7 +28,7 @@ enum TerminalLauncher {
             shellCommand += " '\(escapedPrompt)'"
         }
 
-        switch terminal {
+        switch terminal.resolvedFallback {
         case .terminal:
             return launchTerminalApp(command: shellCommand)
         case .ghostty:
@@ -49,7 +49,7 @@ enum TerminalLauncher {
     ) -> Bool {
         let settings = SettingsService.shared
         let agent = AIAgent(rawValue: settings.defaultAgentCLI) ?? .claudeCode
-        let terminal = TerminalApp.from(settings.defaultTerminal)
+        let terminal = settings.resolveDefaultTerminal().terminal
 
         var prompt: String? = nil
         if settings.sendDefaultPrompt {
@@ -162,7 +162,8 @@ enum TerminalLauncher {
         process.standardError = FileHandle.nullDevice
         do {
             try process.run()
-            return true
+            process.waitUntilExit()
+            return process.terminationStatus == 0
         } catch {
             return false
         }

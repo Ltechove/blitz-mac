@@ -46,6 +46,20 @@ enum TerminalApp: Hashable {
         }
     }
 
+    var isAvailable: Bool {
+        switch self {
+        case .custom(let path):
+            return FileManager.default.fileExists(atPath: path)
+        default:
+            return NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) != nil
+        }
+    }
+
+    /// Missing saved terminals fall back to Terminal so launches still work.
+    var resolvedFallback: TerminalApp {
+        isAvailable ? self : .terminal
+    }
+
     /// Persist to settings as a string
     var settingsValue: String { id }
 

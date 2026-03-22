@@ -611,7 +611,7 @@ struct BundleIDSetupView: View {
 
         let settings = SettingsService.shared
         let agent = AIAgent(rawValue: settings.defaultAgentCLI) ?? .claudeCode
-        let terminal = TerminalApp.from(settings.defaultTerminal)
+        let terminal = settings.resolveDefaultTerminal().terminal
         TerminalLauncher.launch(projectPath: projectPath, agent: agent, terminal: terminal, prompt: prompt)
     }
 
