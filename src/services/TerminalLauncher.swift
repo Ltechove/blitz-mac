@@ -83,7 +83,8 @@ enum TerminalLauncher {
             process.executableURL = binary
             // -e consumes remaining args as the command to run.
             // Wrap in /bin/bash -c so shell syntax (cd && ...) works.
-            process.arguments = ["-e", "/bin/bash", "-c", command]
+            let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+            process.arguments = ["-e", shell, "-l", "-c", command]
             process.standardOutput = FileHandle.nullDevice
             process.standardError = FileHandle.nullDevice
             do {
